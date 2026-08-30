@@ -154,6 +154,63 @@ def make_figure(model: PresetModel, diag: dict, pairs) -> bytes:
     return buf.getvalue()
 
 
+def _chip(rgb) -> str:
+    c = "#%02x%02x%02x" % tuple(int(max(0, min(1, v)) * 255 + 0.5) for v in rgb)
+    return (f'<span style="display:inline-block;width:30px;height:16px;border-radius:3px;'
+            f'border:1px solid #0003;background:{c};vertical-align:-3px"></span>')
+
+
+def guide_html(g: dict) -> str:
+    if not g:
+        return ""
+    rows = []
+    for z in g["zones"]:
+        if not z.get("measured"):
+            rows.append(f"<tr><td>{html.escape(z['zone'])}</td>"
+                        f"<td colspan=3>{html.escape(z['note'])}</td></tr>")
+            continue
+        sw = cs.hsl_to_rgb(np.array(float(z["tint_hue_deg"])), np.array(0.75), np.array(0.5))
+        rows.append(
+            f"<tr><td>{z['zone']}</td><td>{_chip(sw)} {z['tint_name']} "
+            f"({z['tint_hue_deg']:.0f}°)</td><td>{z['tint_strength_dE']:.1f}</td>"
+            f"<td>{z['lightness_dL']:+.1f}</td></tr>")
+
+    brows = []
+    for b in g["ranked_bands"]:
+        trust = "" if b.get("fitted_slider_trustworthy", True) else " ⚠"
+        brows.append(
+            f"<tr><td>{b['band']}{trust}</td><td>{b['hue_shift_deg']:+.1f}°</td>"
+            f"<td>{b['saturation_pct']:+.1f}%</td><td>{b['lightness_pct']:+.1f}%</td>"
+            f"<td>{b['data_share']:.0%}</td></tr>")
+
+    mrows = []
+    for m in g["memory_colours"]:
+        pct = f" ({m['chroma_pct']:+.0f}%)" if m.get("chroma_pct") is not None else ""
+        hue = f"{m['hue_shift_deg']:+.0f}°" if m.get("hue_shift_deg") is not None else "—"
+        note = "" if m["source"].startswith("measured") else " <i>(予測)</i>"
+        mrows.append(
+            f"<tr><td>{html.escape(m['colour'])}{note}</td>"
+            f"<td>{_chip(m['before'])} → {_chip(m['after'])}</td>"
+            f"<td>{m['dE']:.2f}</td><td>{m['dL']:+.1f}</td>"
+            f"<td>{m['dC']:+.1f}{pct}</td><td>{hue}</td></tr>")
+
+    return f"""
+<h2>手で再現するためのカラーガイド</h2>
+<p class="sub">トーンカーブを当てた時点で、色の差が ΔE
+{g['total_colour_dE_after_tone']} 残っています。以下はすべて画素からの実測値で、
+スライダーの当てはめ結果を読み返したものではありません。</p>
+<h3>階調ゾーン（カラーグレーディングのホイールに対応）</h3>
+<table><tr><th>ゾーン</th><th>色の向き</th><th>強さ ΔE</th><th>明度 ΔL*</th></tr>
+{''.join(rows)}</table>
+<h3>色相バンド（カラーミキサー・影響の大きい順）</h3>
+<table><tr><th>バンド</th><th>色相</th><th>彩度</th><th>明度</th><th>画素比</th></tr>
+{''.join(brows)}</table>
+<h3>気になる色がどう動くか（トーンカーブ適用後 → 目標）</h3>
+<table><tr><th>色</th><th>変化</th><th>ΔE</th><th>ΔL*</th><th>Δ彩度</th><th>色相</th></tr>
+{''.join(mrows)}</table>
+"""
+
+
 def write_html(path: str, model: PresetModel, diag: dict, png: bytes, xmp: str) -> None:
     b64 = base64.b64encode(png).decode()
     body = f"""<!doctype html>
@@ -164,6 +221,10 @@ def write_html(path: str, model: PresetModel, diag: dict, png: bytes, xmp: str) 
       background:#fbfbfc;color:#1c1c1e;max-width:1180px}}
  h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:15px;margin:28px 0 8px;color:#444}}
  img{{max-width:100%;border:1px solid #e3e3e6;border-radius:8px;background:#fff}}
+ table{{border-collapse:collapse;font-size:13px;margin:6px 0 18px}}
+ td,th{{border:1px solid #e3e3e6;padding:5px 12px;text-align:right}}
+ th:first-child,td:first-child{{text-align:left}}
+ h3{{font-size:13.5px;margin:18px 0 6px;color:#555}}
  pre{{background:#f4f4f6;border:1px solid #e3e3e6;border-radius:8px;padding:12px;
      overflow:auto;font-size:11.5px;max-height:420px}}
  .sub{{color:#666;margin:0 0 20px}}
@@ -172,6 +233,7 @@ def write_html(path: str, model: PresetModel, diag: dict, png: bytes, xmp: str) 
 <p class="sub">extracted by tonecurve-extractor · {diag.get('n_pairs')} pair(s) ·
 {diag.get('n_samples', 0):,} samples · {diag.get('elapsed_sec')}s</p>
 <img src="data:image/png;base64,{b64}">
+{guide_html(diag.get("colour_guide"))}
 <h2>Lightroom preset (.xmp)</h2>
 <pre>{html.escape(xmp)}</pre>
 <h2>Full diagnostics</h2>

@@ -78,6 +78,7 @@ def cmd_extract(a) -> int:
         detect_frozen=not a.no_frozen_detect, reject_sigma=a.reject_sigma,
         normalize_pair_exposure=not a.no_normalize_pairs,
         normalize_pair_white_balance=not a.no_normalize_wb,
+        colour_guide=not a.no_guide,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
@@ -179,6 +180,11 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
             flag = "  <- far worse than the rest; check this pair" if des[i] > cut else ""
             print(f"  {i + 1:>2}  ΔE {des[i]:>6.2f}   exposure {ev} EV{flag}")
 
+    g = diag.get("colour_guide")
+    if g:
+        from .guide import format_guide
+        print(format_guide(g))
+
     re_ = diag.get("residual_explained")
     if re_:
         print("\nwhy the residual is what it is")
@@ -250,10 +256,13 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--stem", help="output filename stem")
     e.add_argument("--name", default="Extracted Preset")
     e.add_argument("--group", default="tcx")
-    e.add_argument("--color-mode", choices=["curves", "grading", "both"], default="curves",
-                   help="curves: colour lives in the R/G/B curves (most faithful). "
-                        "grading: express colour with the colour-grading wheels. "
-                        "both: curves plus a residual grading fit.")
+    e.add_argument("--color-mode", choices=["tone", "curves", "grading", "both"],
+                   default="curves",
+                   help="tone: reproduce only the luminance curve and hand you a written "
+                        "guide for the colour, to dial in yourself. curves: colour lives "
+                        "in the R/G/B curves (most faithful on the samples). grading: "
+                        "express colour with the colour-grading wheels. both: curves plus "
+                        "a residual grading fit.")
     e.add_argument("--saturation-mode", choices=["hsl", "basic"], default="hsl")
     e.add_argument("--working-space", choices=["auto", "melissa", "srgb"], default="auto",
                    help="space the edit is fitted and applied in. 'melissa' = "
@@ -275,6 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not level the exposure differences between sample pairs")
     e.add_argument("--no-normalize-wb", action="store_true",
                    help="level exposure between pairs but leave their white balance alone")
+    e.add_argument("--no-guide", action="store_true",
+                   help="skip the written colour guide")
     e.add_argument("--diagnose", action="store_true",
                    help="also fit each pair alone, to say whether a poor fit is a real "
                         "limit (local work in the samples) or the pairs disagreeing")

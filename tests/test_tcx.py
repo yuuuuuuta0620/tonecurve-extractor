@@ -400,6 +400,49 @@ def test_releveling_never_makes_the_fit_worse():
     assert "releveling" in d1
 
 
+def test_tone_only_mode_emits_a_neutral_curve_and_nothing_else():
+    before = synthetic_photo(300, 450, seed=17)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, diag = extract([pair], ExtractOptions(
+        iterations=3, color_mode="tone", working_space=look.working_space))
+
+    ident = C.identity_lut(len(model.red))
+    for ch in (model.red, model.green, model.blue):
+        assert np.abs(ch - ident).max() < 1.5 / 255       # colour curves untouched
+    assert np.abs(model.master - ident).max() > 10 / 255  # but the tone curve works
+    assert not model.has_color_curves() and not model.has_grading()
+    assert all(v.hue == 0 and v.sat == 0 and v.lum == 0 for v in model.hsl.values())
+
+    # a preset containing only the master curve is the same in either working
+    # space on neutrals, which is what makes it the safe part to transfer
+    other = PresetModel.from_dict(model.to_dict())
+    other.working_space = "srgb" if model.working_space == "melissa" else "melissa"
+    grey = np.repeat(np.linspace(0.02, 0.98, 128)[:, None], 3, axis=1)
+    assert np.abs(render(grey, model) - render(grey, other)).max() < 1e-6
+
+
+def test_colour_guide_measures_the_work_left_after_the_tone_curve():
+    from tcx.guide import build_guide, format_guide
+    before = synthetic_photo(300, 450, seed=19)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, diag = extract([pair], ExtractOptions(
+        iterations=3, color_mode="tone", working_space=look.working_space))
+
+    g = diag["colour_guide"]
+    assert g["total_colour_dE_after_tone"] > 1.0
+    assert any(z["measured"] for z in g["zones"])
+    assert g["ranked_bands"] and "hue_shift_deg" in g["ranked_bands"][0]
+    # ranked strongest first
+    ex = [b["explains_dE"] for b in g["ranked_bands"]]
+    assert ex == sorted(ex, reverse=True)
+    # a near-neutral reference must not report a meaningless chroma percentage
+    neutral = next(m for m in g["memory_colours"] if m["colour"] == "neutral mid")
+    assert neutral["chroma_pct"] is None or abs(neutral["chroma_pct"]) < 200
+    assert "colour guide" in format_guide(g)
+
+
 def test_lut3d_beats_or_matches_preset(synthetic):
     from tcx import metrics as M
     before, after, _ = synthetic

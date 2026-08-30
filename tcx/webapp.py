@@ -15,7 +15,7 @@ from .align import align_pair, sample_pixels
 from .extract import ExtractOptions, explain_residual, extract_auto
 from .imageio_utils import load_image, match_names, split_pair
 from .model import Calibration
-from .report import make_figure
+from .report import guide_html, make_figure
 from .xmp import build_xmp
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title>
@@ -73,6 +73,7 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
    <div><label>プリセット名</label><input type="text" name="name" value="Extracted Preset"></div>
    <div><label>色の表現</label><select name="color_mode">
      <option value="curves">curves — RGB カーブに色を載せる（最も忠実）</option>
+     <option value="tone">tone — トーンカーブの RGB マスターのみ＋色は手動ガイド</option>
      <option value="grading">grading — カラーグレーディングホイールで表現</option>
      <option value="both">both — カーブ＋残差をグレーディングに</option></select></div>
    <div><label>合成画像の分割</label><select name="split">
@@ -125,7 +126,8 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
   {% if result.has_cube %}<a href="/download/{{ result.token }}/preset.cube">⬇ 3D LUT (.cube)</a>{% endif %}
   <a href="/download/{{ result.token }}/report.png">⬇ レポート画像</a>
  </div>
- <h3 style="font-size:15px;margin:26px 0 8px">.xmp の中身</h3>
+ {{ result.guide_html|safe }}
+<h3 style="font-size:15px;margin:26px 0 8px">.xmp の中身</h3>
  <pre>{{ result.xmp }}</pre>
 {% endif %}
 <p class="hint" style="margin-top:34px">Lightroom Classic への導入: 現像モジュール → プリセット → ＋ → プリセットを読み込み、で .xmp を選択。
@@ -229,6 +231,7 @@ def create_app(workdir: str | None = None) -> Flask:
                         "xmp": xmp, "has_cube": has_cube, "pairs": rows,
                         "suspect": suspect_any,
                         "explain": diag.get("residual_explained"),
+                        "guide_html": guide_html(diag.get("colour_guide")),
                         "warnings": diag.get("warnings", [])})
         except Exception as e:  # surfaced to the user rather than a 500 page
             return render_template_string(PAGE, result=None, error=f"{type(e).__name__}: {e}")

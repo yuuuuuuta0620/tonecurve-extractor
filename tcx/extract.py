@@ -20,7 +20,7 @@ from .render import render, invert_post, apply_exposure
 
 @dataclass
 class ExtractOptions:
-    color_mode: str = "curves"        # curves | grading | both
+    color_mode: str = "curves"        # tone | curves | grading | both
     saturation_mode: str = "hsl"      # hsl | basic
     iterations: int = 3
     max_samples: int = 1_500_000
@@ -62,6 +62,8 @@ class ExtractOptions:
     #: set when the caller has already prepared PairData.fit_before and does
     #: not want extract() to recompute it from the raw before/after ratios
     pair_inputs_prepared: bool = False
+    #: measure the colour work in human terms, for reproducing by hand
+    colour_guide: bool = True
     name: str = "Extracted Preset"
     group: str = "tcx"
     calibration: Calibration = field(default_factory=Calibration)
@@ -254,7 +256,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
         diag["frozen_pixels"] = info
 
     # ---- stage 1: global transfer functions -----------------------------
-    if opts.color_mode == "grading":
+    if opts.color_mode in ("grading", "tone"):
         yb, ya = cs.luma(Bw), cs.luma(Aw)
         fit = C.estimate_transfer(yb, ya, W, n_bins=opts.n_bins, lam=opts.smooth)
         model.master = fit.lut
@@ -287,7 +289,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     for it in range(max(1, opts.iterations)):
         if it > 0:
             pre = invert_post(Aw, model, in_working_space=True)
-            if opts.color_mode == "grading":
+            if opts.color_mode in ("grading", "tone"):
                 h = C.estimate_transfer(cs.luma(Bw), cs.luma(pre), W,
                                         n_bins=opts.n_bins, lam=opts.smooth)
                 model.master = h.lut
@@ -299,7 +301,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
 
         mid = render(Bw, model, upto="curves", in_working_space=True)
 
-        if opts.fit_hsl:
+        if opts.fit_hsl and opts.color_mode != "tone":
             bands, hdiag = fit_hsl(mid, Aw, W, opts.calibration,
                                    fit_hue=opts.fit_hsl_hue,
                                    fit_sat=True,
@@ -316,7 +318,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             model.grade_balance = round(balance, 1)
             diag["grading_detail"] = gdiag
 
-        if opts.saturation_mode == "basic":
+        if opts.saturation_mode == "basic" and opts.color_mode != "tone":
             mid3 = render(Bw, model, upto="grading", in_working_space=True)
             sat, vib = fit_basic_saturation(mid3, Aw, W, opts.calibration)
             model.saturation, model.vibrance = round(sat, 1), round(vib, 1)
@@ -436,6 +438,10 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             f"these sliders hit the ±100 limit and were clipped: {', '.join(railed)}. "
             f"A slider on the rail usually means the model is being asked to explain "
             f"something it cannot express, not that the preset really is that extreme."]
+
+    if opts.colour_guide:
+        from .guide import build_guide
+        diag["colour_guide"] = build_guide(B, A, W0, model, diag.get("hsl_detail"))
 
     diag["diagnostics"] = basic.diagnose(model, B, A, W)
     diag["elapsed_sec"] = round(time.time() - t0, 2)

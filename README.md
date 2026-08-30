@@ -267,6 +267,61 @@ tcx はペア間の露出差を自動で均してからフィットします（`
 （別写真への転写 ΔE 0.45 → 11.2）。測れる明るさ差には**プリセット自身の明るさも含まれる**ので、
 丸ごと外すとルックが壊れます。1 ペアからは分離できません。
 
+### トーンカーブだけ再現して、色は手で当てる
+
+Lightroom の現像処理の中で**意味が一義的に決まっているのはトーンカーブの RGB マスターだけ**です。
+入力レベル → 出力レベルの写像なので、較正定数も推測も要りません。しかも中性画素では
+作業空間による差がゼロなので、**作業空間を取り違えても壊れません**
+（マスターのみ ΔE 0.67、チャンネル別カラーカーブ ΔE 7.47）。
+
+`--color-mode tone` は RGB マスターカーブだけを書き出し、R/G/B 個別カーブ・HSL・
+グレーディングはすべてゼロにします。そのうえで**色は実測値のガイド**として提示するので、
+Lightroom で自分で当てられます。
+
+ただし**精度は落ちます**。正解が既知のデータで測った実測値：
+
+| モード | サンプル上 | 未知の写真 | 作業空間を間違えた場合 |
+|---|---|---|---|
+| `tone`（マスターのみ） | 7.64 | 5.59 | 6.28 |
+| `curves`（既定） | 4.23 | **1.31** | 4.25 |
+| `both` | 4.27 | 1.17 | 4.13 |
+
+（何もしなければ 13.57）
+
+**作業空間をわざと間違えても `curves` の方が良い**というのが実測の結論です。
+色の情報は壊れやすいものの、捨てるには価値が大きすぎます。
+`tone` は「自分で色を作りたい／トーンだけ確実に欲しい」場合の選択肢と考えてください。
+
+#### カラーガイド
+
+どのモードでも、**トーンカーブを当てた後に残る色の作業**が実測値で出ます
+（スライダーの当てはめ結果の読み返しではありません）。
+
+```
+colour guide — what to dial in by hand
+once the tone curve is applied, ΔE 5.83 of colour difference is left to reproduce
+
+tonal zones (these map onto the Colour Grading wheels)
+  shadows     push toward orange (hue 32°), strength 5.5   lightness +0.4 L*
+  midtones    push toward orange (hue 26°), strength 5.5   lightness +0.3 L*
+  highlights  push toward orange (hue 36°), strength 5.6   lightness +0.3 L*
+
+hue bands, strongest first (Colour Mixer)
+  Green     hue  -20.6°   saturation  -12.3%   lightness   -0.2%   (15% of pixels)
+  Yellow    hue   -8.8°   saturation   +8.5%   lightness   +0.3%   (15% of pixels)
+
+colours you care about — after the tone curve, what colour is left to add
+  skin (mid)    155 131 124 -> 165 132 128   ΔE 4.46  L +1.2  chroma +3.7 (+36%)  hue -13°
+  sky           127 161 235 -> 131 146 232   ΔE 5.59  L -4.0  chroma +6.8 (+16%)  hue +10°
+```
+
+- **階調ゾーン**はカラーグレーディングのホイールにそのまま対応します（色相と強さ）
+- **色相バンド**は影響の大きい順。データが薄いバンドには ⚠ が付きます
+- **記憶色**は肌・空・葉・中性を実際の画素から測定（該当画素が少なければ予測値と明示）
+- HTML レポートには**実際の色チップ付き**で出ます
+
+`--no-guide` で省略できます。
+
 ### 結果が悪いとき：限界なのか、直せるのか
 
 ΔE が下がりきらないとき、原因は 2 つあり、**対処法が正反対**です。
@@ -390,7 +445,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 
 | オプション | 既定 | 説明 |
 |---|---|---|
-| `--color-mode {curves,grading,both}` | `curves` | 色をどこで表現するか。`curves` が最も忠実。`grading` は編集しやすいホイールに落とすが誤差は増える |
+| `--color-mode {tone,curves,grading,both}` | `curves` | 色をどこで表現するか。`tone` はマスターカーブのみ＋手動ガイド。`curves` が最も忠実。`grading` は編集しやすいホイールに落とすが誤差は増える |
 | `--saturation-mode {hsl,basic}` | `hsl` | 全体彩度を HSL バンドに畳むか、Basic パネルの彩度／自然な彩度として出すか |
 | `--working-space {auto,melissa,srgb}` | `auto` | 編集を当てはめる色空間。上の「作業空間」節を参照 |
 | `--mask FILE` | なし | 白=測る／黒=無視のマスク画像 |
@@ -399,6 +454,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 | `--no-normalize-pairs` | off | ペア間の露出差の均しを切る |
 | `--no-normalize-wb` | off | 露出だけ均し、ホワイトバランスは触らない |
 | `--diagnose` | off | 各ペア単独でもフィットして、限界か改善可能かを判定 |
+| `--no-guide` | off | 手動再現用のカラーガイドを省略 |
 | `--reject-sigma S` | 6.0 | プリセットで説明できない画素の棄却しきい値。0 で無効 |
 | `--iterations N` | 3 | 座標降下の反復回数。4〜5 で概ね収束 |
 | `--smooth F` | 2.0 | トーンカーブの平滑化強度。ノイズの多い素材では上げる |
@@ -416,7 +472,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 45 テスト、約 90 秒
+.venv/bin/python -m pytest tests -q          # 47 テスト、約 120 秒
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```
@@ -429,6 +485,7 @@ tcx/
   render.py      順方向レンダラと各段の逆変換（＝プリセットの定義）
   hsl.py         8 バンド HSL のロバスト連立フィット
   grading.py     カラーグレーディングの非線形フィット
+  guide.py       手動再現用のカラーガイド（実測値）
   extract.py     反復座標降下の統括
   lut3d.py       正則化付き 3D LUT 推定と .cube 出力
   xmp.py         Lightroom プリセット書き出し
