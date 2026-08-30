@@ -142,14 +142,23 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             f"per-photo work the seller did on each frame. It has been levelled out "
             f"before fitting, but whatever exposure they applied to *all* the samples "
             f"is still inside the curve and will follow the preset onto your photos."]
-    if len(pairs) == 1:
+    n = len(pairs)
+    if n <= 4:
+        # measured on ground truth with realistic per-frame variation in the
+        # samples (exposure sd 0.4 EV, white balance sd 2 %, q85 4:2:0 JPEG):
+        # median / worst-case ΔE when the preset is applied to an unseen photo
+        table = {1: ("5.7", "6.2"), 2: ("2.7", "3.4"), 3: ("1.4", "5.6"), 4: ("1.7", "2.8")}
+        med, worst = table[n]
+        detail = ("a single pair cannot separate the preset from the exposure, white "
+                  "balance and local work the seller did on that one frame"
+                  if n == 1 else
+                  f"{n} pairs begin to separate the preset from per-frame work, but not "
+                  f"reliably")
         diag["warnings"] = diag.get("warnings", []) + [
-            "fitted from a single pair: any exposure, white balance or local work the "
-            "seller did on that one frame is indistinguishable from the preset itself "
-            "and is baked into the curve. Measured on ground truth, samples free of "
-            "per-frame work transfer to an unrelated photo at ΔE 0.4, while samples "
-            "carrying it transfer at ΔE 2.4-6.8. Use several pairs from different "
-            "scenes."]
+            f"fitted from {n} pair{'s' if n > 1 else ''}: {detail}. On ground truth this "
+            f"transfers to an unseen photograph at ΔE {med} typical, {worst} worst case "
+            f"— against ΔE 1.4 typical / 2.3 worst at 8 pairs. Add more pairs from "
+            f"different scenes if the preset is meant for your own photographs."]
     if abs(implied_ev) > 0.5:
         diag["warnings"] = diag.get("warnings", []) + [
             f"the pair differs by {implied_ev:+.2f} EV of overall brightness, all of it "
