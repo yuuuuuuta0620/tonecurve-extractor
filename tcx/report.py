@@ -124,7 +124,17 @@ def make_figure(model: PresetModel, diag: dict, pairs) -> bytes:
         p = pairs[0]
         pred = render(p.before, model)
         err = cs.delta_e2000(cs.rgb_to_lab(pred), cs.rgb_to_lab(p.after))
-        panels = [(_thumb(p.before), "before"),
+        before_vis = _thumb(p.before)
+        title_b = "before"
+        if getattr(p, "outlier_mask", None) is not None and p.outlier_mask.any():
+            import cv2
+            m = cv2.resize(p.outlier_mask.astype(np.float32),
+                           (before_vis.shape[1], before_vis.shape[0]),
+                           interpolation=cv2.INTER_AREA)[..., None]
+            before_vis = np.clip(before_vis * (1 - 0.75 * m)
+                                 + np.array([1.0, 0.15, 0.25]) * 0.75 * m, 0, 1)
+            title_b = f"before — red = excluded ({p.outlier_mask.mean():.1%})"
+        panels = [(before_vis, title_b),
                   (_thumb(p.after), "after (reference)"),
                   (_thumb(pred), "before + extracted preset")]
         sub = gs[1, :].subgridspec(1, 4, wspace=0.06)

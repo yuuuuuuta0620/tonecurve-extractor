@@ -21,6 +21,7 @@ class PairData:
     before_s: np.ndarray          # slightly blurred copies used for sampling
     after_s: np.ndarray
     info: dict = field(default_factory=dict)
+    outlier_mask: np.ndarray | None = None   # filled in by extract(), for reporting
 
 
 def _gray(rgb: np.ndarray) -> np.ndarray:
@@ -46,7 +47,9 @@ def align_pair(before: np.ndarray,
                motion: str = "translation",
                blur_sigma: float = 0.8,
                edge_percentile: float = 60.0,
-               do_align: bool = True) -> PairData:
+               do_align: bool = True,
+               mask: np.ndarray | None = None,
+               exclude: list[tuple[float, float, float, float]] | None = None) -> PairData:
     info: dict = {}
 
     # 1. common geometry -- never upsample, so we never invent detail
@@ -107,6 +110,22 @@ def align_pair(before: np.ndarray,
     bw = max(2, int(0.01 * max(before.shape[:2])))
     weight[:bw] = weight[-bw:] = 0.0
     weight[:, :bw] = weight[:, -bw:] = 0.0
+
+    # user-supplied exclusions: a mask image (white = use) and/or fractional
+    # rectangles, for watermarks and logos you would rather not have measured
+    if mask is not None:
+        m = mask if mask.ndim == 2 else mask.mean(axis=2)
+        m = cv2.resize(m.astype(np.float32), (weight.shape[1], weight.shape[0]),
+                       interpolation=cv2.INTER_AREA)
+        weight = weight * np.clip(m, 0.0, 1.0)
+        info["user_mask_keeps"] = round(float(np.mean(m > 0.5)), 4)
+    if exclude:
+        h2, w2 = weight.shape
+        for (l, t, ww, hh) in exclude:
+            x0, y0 = int(round(l * w2)), int(round(t * h2))
+            x1, y1 = int(round((l + ww) * w2)), int(round((t + hh) * h2))
+            weight[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = 0.0
+        info["excluded_rects"] = len(exclude)
 
     info["edge_weight_mean"] = round(float(weight.mean()), 4)
 

@@ -45,6 +45,34 @@ def synthetic_photo(h=900, w=1350, seed=0) -> np.ndarray:
     return np.clip(img, 0, 1)
 
 
+def watermark_layers(h: int, w: int, alpha: float = 0.25):
+    """A stand-in for the marks preset sellers burn into sample images:
+    a large translucent logo plus a small opaque caption."""
+    from PIL import Image, ImageDraw
+
+    m = Image.new("L", (w, h), 0)
+    d = ImageDraw.Draw(m)
+    cx, cy, r = int(w * 0.42), int(h * 0.50), int(min(h, w) * 0.42)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=255, width=max(8, int(r * 0.13)))
+    d.rectangle([cx - r // 3, cy - r - 10, cx + r + int(w * 0.5), cy - r + int(r * 0.30)], fill=0)
+    for i in range(7):
+        x0 = cx + int(r * 0.35) + i * int(r * 0.30)
+        d.rectangle([x0, cy - int(r * 0.13), x0 + int(r * 0.20), cy + int(r * 0.28)], fill=255)
+    soft = np.asarray(m).astype(np.float64) / 255.0 * alpha
+
+    hard = Image.new("L", (w, h), 0)
+    d2 = ImageDraw.Draw(hard)
+    for i in range(12):
+        x0 = int(w * 0.09) + i * int(w * 0.048)
+        d2.rectangle([x0, int(h * 0.930), x0 + int(w * 0.033), int(h * 0.962)], fill=255)
+    return soft, np.asarray(hard).astype(np.float64) / 255.0
+
+
+def stamp_watermark(img, soft, hard, colour: float = 0.97):
+    out = img * (1 - soft[..., None]) + colour * soft[..., None]
+    return np.clip(out * (1 - hard[..., None]) + colour * hard[..., None], 0, 1)
+
+
 def known_preset() -> PresetModel:
     m = PresetModel(name="Synthetic Truth")
     x = np.linspace(0, 1, C.LUT_N)

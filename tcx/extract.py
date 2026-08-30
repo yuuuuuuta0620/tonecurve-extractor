@@ -13,6 +13,7 @@ from . import basic
 from .align import PairData, sample_pixels
 from .grading import fit_grading
 from .hsl import fit_hsl, fit_basic_saturation
+from .robust import weighted_median
 from .model import PresetModel, Calibration, BAND_NAMES, GradeZone
 from .render import render, invert_post
 
@@ -32,6 +33,23 @@ class ExtractOptions:
     fit_hsl_lum: bool = True
     grading_global: bool = False
     quantize: bool = True             # emit exactly the curve Lightroom will rebuild
+    # Rejection of pixels the model cannot explain (burned-in watermarks and
+    # captions, local adjustments, residual misalignment).  The cut is the
+    # widest of: a robust multiple of the residual spread, a perceptual floor,
+    # and the quantile that caps how much data may be discarded.
+    reject_sigma: float = 6.0         # robust sigmas; 0 disables rejection
+    reject_floor_de: float = 3.0      # never cut below this CIEDE2000
+    reject_max_fraction: float = 0.25 # never discard more than this much weight
+
+    # Burned-in opaque marks (watermarks, captions, logos) are *not* findable
+    # from the fit residual: they sit at high-leverage tonal values, so the
+    # curve simply bends to fit them and their residual goes small.  They are
+    # findable before fitting anything, from the pair alone: the whole frame
+    # moved, and these pixels did not move at all.
+    detect_frozen: bool = True
+    frozen_abs_de: float = 0.6        # "did not move" floor, above JPEG noise
+    frozen_rel: float = 0.06          # ...or this fraction of the frame's median move
+    frozen_max_fraction: float = 0.30 # refuse to act if this much looks frozen
     working_space: str = "auto"       # "auto" | "melissa" | "srgb"
     name: str = "Extracted Preset"
     group: str = "tcx"
@@ -69,6 +87,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
 
     model = PresetModel(calibration=opts.calibration, name=opts.name, group=opts.group,
                         working_space=opts.working_space)
+    W0 = W.copy()          # geometry-derived weights, never discarded
 
     # The whole edit is fitted in Lightroom's working space, so the curve we
     # write into the XMP is the curve Lightroom will actually apply.  The two
@@ -76,6 +95,37 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     Bw = cs.to_working(B, model.working_space)
     Aw = cs.to_working(A, model.working_space)
     diag["working_space"] = model.working_space
+
+    # ---- stage 0: pixels that did not move at all ------------------------
+    # A burned-in watermark or caption is identical in both images, so it
+    # asserts f(x) = x.  Left in, that assertion is applied with enormous
+    # leverage wherever the mark's tone is rare -- a white caption pins the
+    # highlight end of the curve.  It has to be removed *before* the first
+    # fit: afterwards the curve has already bent to accommodate it and the
+    # residual no longer reveals it.
+    if opts.detect_frozen:
+        observed = cs.delta_e2000(cs.rgb_to_lab(A), cs.rgb_to_lab(B))
+        med_obs = weighted_median(observed, W0)
+        thr = max(opts.frozen_abs_de, opts.frozen_rel * med_obs)
+        frozen = observed < thr
+        frac = float(np.average(frozen, weights=W0))
+        info = {"frame_median_move_dE": round(float(med_obs), 3),
+                "threshold_dE": round(float(thr), 3),
+                "fraction": round(frac, 4)}
+        if med_obs < 2.0:
+            info["action"] = "skipped: the pair barely differs, nothing to compare against"
+        elif frac > opts.frozen_max_fraction:
+            info["action"] = (f"skipped: {frac:.0%} of the frame looks unmoved, which is "
+                              f"more likely a weak preset than a watermark")
+        else:
+            W = W0 * ~frozen
+            info["action"] = "excluded from the fit"
+            if frac > 0.002:
+                diag["warnings"] = diag.get("warnings", []) + [
+                    f"{frac:.1%} of pixels are identical in both images while the rest of "
+                    f"the frame moved by ΔE {med_obs:.1f} — looks like a burned-in "
+                    f"watermark or caption; excluded from the fit"]
+        diag["frozen_pixels"] = info
 
     # ---- stage 1: global transfer functions -----------------------------
     if opts.color_mode == "grading":
@@ -146,7 +196,43 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             model.saturation, model.vibrance = round(sat, 1), round(vib, 1)
 
         out = render(B, model)
-        history.append(M.compare(out, A, W))   # scored in sRGB, as delivered
+        history.append(M.compare(out, A, W0))  # scored in sRGB, as delivered
+
+        # Pixels the fitted preset cannot explain are not evidence about the
+        # preset: burned-in watermarks and captions, local adjustments, brush
+        # work, residual misalignment.  Down-weight them and refit.  We reject
+        # rather than inpaint, because inpainted pixels are invented colour and
+        # this pipeline exists to *measure* colour.
+        keep_frozen = np.where(frozen, 0.0, 1.0) if (
+            opts.detect_frozen and diag.get("frozen_pixels", {}).get(
+                "action") == "excluded from the fit") else None
+
+        if opts.reject_sigma > 0:
+            resid = cs.delta_e2000(cs.rgb_to_lab(out), cs.rgb_to_lab(A))
+            med = weighted_median(resid, W0)
+            sigma = 1.4826 * weighted_median(np.abs(resid - med), W0)
+            cut = max(med + opts.reject_sigma * sigma, opts.reject_floor_de)
+            # hard cap on how much evidence may be thrown away
+            cut = max(cut, weighted_median(resid, W0, 1.0 - opts.reject_max_fraction))
+            if not (np.isfinite(cut) and cut > 0):
+                if keep_frozen is not None:
+                    W = W0 * keep_frozen
+            if np.isfinite(cut) and cut > 0:
+                # smooth shoulder over the last 25 % below the cut
+                lo = cut * 0.75
+                keep = np.clip((cut - resid) / max(cut - lo, 1e-6), 0.0, 1.0) ** 2
+                keep = np.where(resid <= lo, 1.0, keep)
+                if keep_frozen is not None:
+                    keep = keep * keep_frozen
+                W = W0 * keep
+                diag["outlier_rejection"] = {
+                    "residual_median_dE": round(float(med), 3),
+                    "residual_sigma_dE": round(float(sigma), 4),
+                    "cut_dE": round(float(cut), 3),
+                    "weight_removed_fraction":
+                        round(float(1.0 - W.sum() / max(W0.sum(), 1e-12)), 4),
+                    "fully_rejected_pixel_fraction": round(float(np.mean(keep <= 0)), 4),
+                }
 
     diag["iteration_metrics"] = history
 
@@ -162,14 +248,32 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     diag["control_points"] = {k: len(v) for k, v in points.items()}
 
     # ---- verification on the real (unblurred, full) images ---------------
+    # Reported over every pixel, so a watermark or a local edit still counts
+    # against the score; the "explained" figure additionally shows the error
+    # over just the pixels the global model claims to describe.
     ver = []
     for p in pairs:
         pred = render(p.before, model)
         base = M.compare(p.before, p.after, p.weight)
         got = M.compare(pred, p.after, p.weight)
-        ver.append({"size": p.info.get("working_size"),
-                    "baseline": base, "preset": got,
-                    "improvement": M.improvement(base, got)})
+        entry = {"size": p.info.get("working_size"),
+                 "baseline": base, "preset": got,
+                 "improvement": M.improvement(base, got)}
+        if opts.reject_sigma > 0 or opts.detect_frozen:
+            lab_b, lab_a, lab_p = (cs.rgb_to_lab(p.before), cs.rgb_to_lab(p.after),
+                                   cs.rgb_to_lab(pred))
+            resid = cs.delta_e2000(lab_p, lab_a)
+            cut = (diag.get("outlier_rejection") or {}).get("cut_dE") or np.inf
+            bad = resid > cut
+            if diag.get("frozen_pixels", {}).get("action") == "excluded from the fit":
+                thr = diag["frozen_pixels"]["threshold_dE"]
+                bad = bad | (cs.delta_e2000(lab_a, lab_b) < thr)
+            if True:
+                inlier = p.weight * ~bad
+                entry["preset_explained_pixels"] = M.compare(pred, p.after, inlier)
+                entry["explained_pixel_fraction"] = round(float((~bad).mean()), 4)
+                p.outlier_mask = bad
+        ver.append(entry)
     diag["verification"] = ver
     diag["verification_mean"] = {
         k: round(float(np.mean([v["preset"][k] for v in ver])), 3)

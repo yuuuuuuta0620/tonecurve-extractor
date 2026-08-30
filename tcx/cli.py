@@ -49,12 +49,21 @@ def cmd_extract(a) -> int:
         with open(a.calibration, encoding="utf-8") as f:
             cal = Calibration(**json.load(f))
 
+    user_mask = load_image(a.mask) if a.mask else None
+    exclude = []
+    for spec in (a.exclude or []):
+        try:
+            l, t, w, h = (float(v) for v in spec.split(","))
+        except ValueError:
+            raise SystemExit(f"--exclude wants left,top,width,height as fractions: {spec!r}")
+        exclude.append((l, t, w, h))
+
     pairs = []
     for spec in specs:
         b, af = _load_pair_spec(spec, a.split, a.split_gap)
         pd = align_pair(b, af, max_dim=a.max_dim, motion=a.motion,
                         blur_sigma=a.blur, edge_percentile=a.edge_percentile,
-                        do_align=not a.no_align)
+                        do_align=not a.no_align, mask=user_mask, exclude=exclude)
         pd.info["source"] = spec
         pairs.append(pd)
         if a.verbose:
@@ -66,6 +75,7 @@ def cmd_extract(a) -> int:
         max_points=a.max_points, fit_hsl=not a.no_hsl, fit_hsl_hue=not a.no_hue,
         fit_hsl_lum=not a.no_hsl_lum, grading_global=a.grading_global,
         quantize=not a.no_quantize, working_space=a.working_space,
+        detect_frozen=not a.no_frozen_detect, reject_sigma=a.reject_sigma,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
@@ -152,6 +162,14 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
             if abs(z.sat) > 0.5 or abs(z.lum) > 0.5:
                 print(f"  {k:<10} hue {z.hue:>5.0f}°  sat {z.sat:>5.0f}  lum {z.lum:>5.0f}")
         print(f"  blending {model.grade_blending:.0f}  balance {model.grade_balance:.0f}")
+    fz = diag.get("frozen_pixels")
+    if fz and fz.get("fraction", 0) > 0:
+        print(f"\nburned-in / unmoved pixels: {fz['fraction']:.2%} "
+              f"(frame moved ΔE {fz['frame_median_move_dE']}) — {fz['action']}")
+    rj = diag.get("outlier_rejection")
+    if rj:
+        print(f"unexplained pixels down-weighted: "
+              f"{rj['weight_removed_fraction']:.2%} above ΔE {rj['cut_dE']}")
     if diag.get("warnings"):
         print("\nwarnings")
         for w in diag["warnings"]:
@@ -225,6 +243,15 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--blur", type=float, default=0.8, help="pre-sampling blur sigma")
     e.add_argument("--edge-percentile", type=float, default=60.0)
     e.add_argument("--no-align", action="store_true")
+    e.add_argument("--mask", help="mask image: white = measure, black = ignore "
+                                  "(for watermarks, logos, borders)")
+    e.add_argument("--exclude", action="append", metavar="L,T,W,H",
+                   help="ignore a rectangle, as fractions of the frame "
+                        "(e.g. 0.05,0.90,0.6,0.08). Repeatable.")
+    e.add_argument("--no-frozen-detect", action="store_true",
+                   help="do not auto-exclude pixels identical in both images")
+    e.add_argument("--reject-sigma", type=float, default=6.0,
+                   help="robust cut for pixels the preset cannot explain; 0 disables")
     e.add_argument("--no-hsl", action="store_true")
     e.add_argument("--no-hue", action="store_true")
     e.add_argument("--no-hsl-lum", action="store_true")

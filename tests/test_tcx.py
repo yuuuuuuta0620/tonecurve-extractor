@@ -24,7 +24,8 @@ from tcx.model import BAND_NAMES, GradeZone, HSLBand, PresetModel
 from tcx.render import band_weights, grade_masks, invert_post, render
 from tcx.xmp import build_xmp
 
-from examples.make_synthetic import known_preset, synthetic_photo
+from examples.make_synthetic import (known_preset, stamp_watermark, synthetic_photo,
+                                     watermark_layers)
 
 
 # --------------------------------------------------------------------- colour
@@ -241,6 +242,58 @@ def test_extract_survives_jpeg_resize_and_shift(synthetic):
     assert pair.info["ncc_after_align"] >= pair.info["ncc_before_align"]
     model, diag = extract_auto([pair], ExtractOptions(iterations=3))
     assert diag["verification_mean"]["dE_mean"] < 2.5
+
+
+def test_burned_in_caption_is_detected_and_excluded():
+    """An opaque caption asserts f(x) = x with huge leverage at the white end.
+    It cannot be found from the fit residual -- the curve bends to fit it --
+    so it must be excluded before the first fit."""
+    before = synthetic_photo(600, 900, seed=31)
+    truth = known_preset()
+    after = render(before, truth)
+    soft, hard = watermark_layers(*before.shape[:2])
+    bw = stamp_watermark(before, soft * 0, hard)
+    aw = stamp_watermark(after, soft * 0, hard)
+
+    opaque_fraction = float((hard > 0).mean())
+    pair = align_pair(bw, aw, do_align=False, blur_sigma=0.0)
+    model, diag = extract([pair], ExtractOptions(
+        iterations=4, working_space=truth.working_space))
+
+    fz = diag["frozen_pixels"]
+    assert fz["action"] == "excluded from the fit"
+    assert abs(fz["fraction"] - opaque_fraction) < 0.01, (fz, opaque_fraction)
+
+    def highlight_err(m):
+        ft, fg = get_channel_transfers(truth), get_channel_transfers(m)
+        return float(np.mean([np.abs(a - b)[900:] for a, b in zip(ft, fg)]) * 255)
+
+    off, _ = extract([align_pair(bw, aw, do_align=False, blur_sigma=0.0)],
+                     ExtractOptions(iterations=4, working_space=truth.working_space,
+                                    detect_frozen=False, reject_sigma=0))
+    assert highlight_err(model) < 0.5 * highlight_err(off), (
+        highlight_err(model), highlight_err(off))
+
+
+def test_frozen_detection_does_not_fire_on_clean_pairs():
+    before = synthetic_photo(400, 600, seed=33)
+    truth = known_preset()
+    pair = align_pair(before, render(before, truth), do_align=False, blur_sigma=0.0)
+    _, diag = extract([pair], ExtractOptions(iterations=2,
+                                             working_space=truth.working_space))
+    assert diag["frozen_pixels"]["fraction"] < 0.005, diag["frozen_pixels"]
+
+
+def test_manual_mask_and_exclude_zero_the_weights():
+    img = synthetic_photo(200, 300, seed=1)
+    mask = np.ones(img.shape[:2])
+    mask[:, :90] = 0.0
+    p1 = align_pair(img, img, do_align=False, mask=mask)
+    assert p1.weight[:, :80].max() == 0
+    assert p1.weight[:, 150:].max() > 0
+    p2 = align_pair(img, img, do_align=False, exclude=[(0.0, 0.8, 1.0, 0.2)])
+    assert p2.weight[int(0.9 * 200):].max() == 0
+    assert p2.info["excluded_rects"] == 1
 
 
 def test_lut3d_beats_or_matches_preset(synthetic):
