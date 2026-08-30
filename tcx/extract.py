@@ -193,7 +193,19 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             f"before fitting, but whatever exposure they applied to *all* the samples "
             f"is still inside the curve and will follow the preset onto your photos."]
     n = len(pairs)
-    if n <= 4:
+    if opts.color_mode == "tone":
+        # A master curve has too few degrees of freedom to absorb per-frame
+        # work, so it does not overfit and one pair is close to the ceiling.
+        # Measured on unseen photographs (per-frame exposure sd 0.4 EV, WB sd
+        # 2%, q85 4:2:0 JPEG): 1 pair ΔE 6.42 spanning 5.97-7.55, 6 pairs ΔE
+        # 6.06 spanning 5.93-6.15.  Only the exposure caveat still applies.
+        if abs(implied_ev) > 0.5:
+            diag["warnings"] = diag.get("warnings", []) + [
+                f"the curve carries {implied_ev:+.2f} EV of overall brightness, part of "
+                f"it the preset and part the exposure chosen for these frames. Set "
+                f"Exposure to taste on your own photographs; the shape of the curve is "
+                f"what transfers."]
+    elif n <= 4:
         # measured on ground truth with realistic per-frame variation in the
         # samples (exposure sd 0.4 EV, white balance sd 2 %, q85 4:2:0 JPEG):
         # median / worst-case ΔE when the preset is applied to an unseen photo
@@ -209,7 +221,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             f"transfers to an unseen photograph at ΔE {med} typical, {worst} worst case "
             f"— against ΔE 1.4 typical / 2.3 worst at 8 pairs. Add more pairs from "
             f"different scenes if the preset is meant for your own photographs."]
-    if abs(implied_ev) > 0.5:
+    if abs(implied_ev) > 0.5 and opts.color_mode != "tone":
         diag["warnings"] = diag.get("warnings", []) + [
             f"the pair differs by {implied_ev:+.2f} EV of overall brightness, all of it "
             f"carried by the tone curve. Part of that is the preset and part is the "
