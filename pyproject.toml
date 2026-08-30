@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tonecurve-extractor"
+version = "0.1.0"
+description = "Reverse-engineer Lightroom presets (tone curves, color mixer, color grading) from before/after image pairs"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pillow>=9.5",
+    "opencv-python-headless>=4.8",
+    "matplotlib>=3.7",
+    "flask>=3.0",
+    "requests>=2.31",
+]
+
+[project.scripts]
+tcx = "tcx.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tcx*"]

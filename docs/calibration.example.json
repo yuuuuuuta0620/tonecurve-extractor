@@ -1,0 +1,9 @@
+{
+  "hue_degrees_per_100": 30.0,
+  "sat_gain": 1.0,
+  "lum_gamma_stops": 1.0,
+  "band_falloff": "smooth",
+  "grade_sat_gain": 0.35,
+  "grade_lum_stops": 1.0,
+  "vibrance_exponent": 2.0
+}
