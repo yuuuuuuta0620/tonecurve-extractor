@@ -163,6 +163,18 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
             if abs(z.sat) > 0.5 or abs(z.lum) > 0.5:
                 print(f"  {k:<10} hue {z.hue:>5.0f}°  sat {z.sat:>5.0f}  lum {z.lum:>5.0f}")
         print(f"  blending {model.grade_blending:.0f}  balance {model.grade_balance:.0f}")
+    ver = diag.get("verification") or []
+    if len(ver) > 1:
+        import statistics
+        des = [v["preset"]["dE_mean"] for v in ver]
+        cut = max(3 * statistics.median(des), statistics.median(des) + 4)
+        evs = (diag.get("pair_exposure") or {}).get("per_pair_ev") or []
+        print("\nper-pair fit")
+        for i, v in enumerate(ver):
+            ev = f"{evs[i]:+.2f}" if i < len(evs) else "   -"
+            flag = "  <- far worse than the rest; check this pair" if des[i] > cut else ""
+            print(f"  {i + 1:>2}  ΔE {des[i]:>6.2f}   exposure {ev} EV{flag}")
+
     pe = diag.get("pair_exposure") or {}
     if pe.get("spread_ev", 0) > 0.05:
         print(f"\nper-pair exposure: {pe['per_pair_ev']} EV "

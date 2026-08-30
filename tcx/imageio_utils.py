@@ -117,3 +117,40 @@ def fetch_url(url: str, dest_dir: str, timeout: int = 30) -> str:
         for chunk in r.iter_content(1 << 16):
             f.write(chunk)
     return out
+
+
+# Single-letter roles need a separator in front of them, or "Nostargia" loses
+# its final "a" and two unrelated files start looking like a pair.
+_ROLE_TOKENS = re.compile(
+    r"(?:[ _\-.]*(?:before|after|original|orig|edited|edit|preset|raw|src|out)"
+    r"|[ _\-.]+[ab])$", re.I)
+
+
+def _pair_key(name: str) -> str:
+    """Filename reduced to what should be common between a before and an after."""
+    stem = os.path.splitext(os.path.basename(name))[0].lower()
+    prev = None
+    while prev != stem:                       # strip e.g. "shot01_before_v2" -> "shot01"
+        prev = stem
+        stem = _ROLE_TOKENS.sub("", stem)
+    return stem.strip(" _-.")
+
+
+def match_names(befores: list[str], afters: list[str]) -> list[tuple[int, int]]:
+    """Pair two lists of uploaded filenames.
+
+    Prefers a shared stem ("shot3_before.jpg" with "shot3_after.jpg"), which
+    survives whatever order the browser hands the files over in.  Falls back
+    to sorted order when the names carry no usable structure.
+    """
+    if len(befores) != len(afters):
+        raise ValueError(f"got {len(befores)} before and {len(afters)} after images; "
+                         f"the counts must match")
+    bk = [_pair_key(n) for n in befores]
+    ak = [_pair_key(n) for n in afters]
+    if len(set(bk)) == len(bk) and set(bk) == set(ak):
+        pos = {k: i for i, k in enumerate(ak)}
+        return [(i, pos[k]) for i, k in enumerate(bk)]
+    bo = sorted(range(len(befores)), key=lambda i: befores[i].lower())
+    ao = sorted(range(len(afters)), key=lambda i: afters[i].lower())
+    return list(zip(bo, ao))

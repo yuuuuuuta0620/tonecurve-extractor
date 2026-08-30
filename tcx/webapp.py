@@ -13,7 +13,7 @@ from flask import Flask, Response, abort, render_template_string, request, send_
 
 from .align import align_pair, sample_pixels
 from .extract import ExtractOptions, extract_auto
-from .imageio_utils import load_image, split_pair
+from .imageio_utils import load_image, match_names, split_pair
 from .model import Calibration
 from .report import make_figure
 from .xmp import build_xmp
@@ -57,7 +57,16 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
    <div><label>Before（複数可）</label><input type="file" name="before" accept="image/*" multiple required></div>
    <div><label>After（複数可・Before と同じ順）</label><input type="file" name="after" accept="image/*" multiple></div>
   </div>
-  <div class="hint">After を空にして Before に 1 枚だけ入れると、左右／上下に並んだ合成サンプル画像として分割します。</div>
+  <div class="hint">
+   <b>複数ペアを一度に</b>：Before 側に元画像を全部、After 側に適用後を全部選んでください（各6枚など）。
+   <code>01_before.jpg</code> / <code>01_after.jpg</code> のように<b>共通の名前</b>が付いていれば、
+   選択順に関係なく自動で正しく組み合わせます。名前に手がかりが無い場合はファイル名順で組みます。
+   組み合わせの結果は実行後に一覧表示されるので、必ず確認してください。<br>
+   <b>左右に並んだ合成画像</b>の場合は After を空にし、Before 側に合成画像を（複数可）選んで、
+   下の「合成画像の分割」を指定します。<br>
+   <b>ペア数の目安</b>：1 ペアだと結果が大きく振れます（未知の写真で ΔE 0.8〜6.2）。
+   6〜8 ペアで最悪でも ΔE 2.3 に収まります。
+  </div>
  </fieldset>
  <fieldset><legend>設定</legend>
   <div class="row">
@@ -80,6 +89,18 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
 </form>
 {% if error %}<div class="err"><b>エラー:</b> {{ error }}</div>{% endif %}
 {% if result %}
+ <h3 style="font-size:15px;margin:26px 0 8px">組み合わせ（{{ result.pairs|length }} ペア）</h3>
+ <table>
+  <tr><th>#</th><th>Before</th><th>After</th><th>ΔE</th><th>露出差 EV</th><th>一致度</th></tr>
+  {% for p in result.pairs %}
+  <tr{% if p.suspect %} style="background:#d3333318"{% endif %}>
+   <td>{{ loop.index }}</td><td>{{ p.before }}</td><td>{{ p.after }}</td>
+   <td>{{ p.de }}{% if p.suspect %} ⚠{% endif %}</td><td>{{ p.ev }}</td><td>{{ p.ncc }}</td>
+  </tr>{% endfor %}
+ </table>
+ {% if result.suspect %}<div class="err">⚠ 他のペアに比べて誤差が突出しているペアがあります。
+  Before / After の対応が間違っている、別のプリセットが当たっている、あるいはそのカットだけ
+  部分補正が強い可能性があります。除外して再実行すると改善するかもしれません。</div>{% endif %}
  <img src="data:image/png;base64,{{ result.png }}">
  <table>
   <tr><th>指標</th><th>抽出プリセット</th><th>未編集（差分の大きさ）</th></tr>
@@ -134,17 +155,19 @@ def create_app(workdir: str | None = None) -> Flask:
                 fs.save(p)
                 return load_image(p)
 
-            pairs = []
+            pairs, labels = [], []
             if afters:
-                if len(afters) != len(befores):
-                    raise ValueError("Before と After の枚数を揃えてください")
-                for fb, fa in zip(befores, afters):
-                    pairs.append((_read(fb), _read(fa)))
+                order = match_names([f.filename for f in befores],
+                                    [f.filename for f in afters])
+                for i, j in order:
+                    pairs.append((_read(befores[i]), _read(afters[j])))
+                    labels.append((befores[i].filename, afters[j].filename))
             else:
                 if not split:
                     raise ValueError("After が無い場合は「合成画像の分割」を選んでください")
                 for fb in befores:
                     pairs.append(split_pair(_read(fb), split))
+                    labels.append((fb.filename + " (左/上)", fb.filename + " (右/下)"))
 
             aligned = [align_pair(b, a) for b, a in pairs]
             opts = ExtractOptions(
@@ -168,12 +191,31 @@ def create_app(workdir: str | None = None) -> Flask:
                            fit_lut3d(B, A, W, model=model, size=33), title=model.name)
                 has_cube = True
 
+            evs = (diag.get("pair_exposure") or {}).get("per_pair_ev") or []
+            des = [v["preset"]["dE_mean"] for v in diag["verification"]]
+            # A mis-paired upload shows up far more clearly in its own residual
+            # than in image correlation: two unrelated photographs can still
+            # correlate, but no single preset explains both of them.
+            import statistics
+            cut = (max(3 * statistics.median(des), statistics.median(des) + 4)
+                   if len(des) >= 3 else float("inf"))
+            rows, suspect_any = [], False
+            for i, (p, (nb, na)) in enumerate(zip(aligned, labels)):
+                ncc = p.info.get("ncc_after_align", 0.0)
+                suspect = des[i] > cut or ncc < 0.5
+                suspect_any |= suspect
+                rows.append({
+                    "before": nb, "after": na, "de": des[i],
+                    "ev": f"{evs[i]:+.2f}" if i < len(evs) else "-",
+                    "ncc": f"{ncc:.3f}", "suspect": suspect})
+
             _STORE[token] = d
             return render_template_string(
                 PAGE, error=None,
                 result={"png": base64.b64encode(png).decode(), "token": token,
                         "v": diag["verification_mean"], "b": diag["baseline_mean"],
-                        "xmp": xmp, "has_cube": has_cube,
+                        "xmp": xmp, "has_cube": has_cube, "pairs": rows,
+                        "suspect": suspect_any,
                         "warnings": diag.get("warnings", [])})
         except Exception as e:  # surfaced to the user rather than a 500 page
             return render_template_string(PAGE, result=None, error=f"{type(e).__name__}: {e}")

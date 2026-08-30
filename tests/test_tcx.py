@@ -18,7 +18,8 @@ from tcx import curves as C
 from tcx.align import align_pair, sample_pixels
 from tcx.extract import (ExtractOptions, extract, extract_auto,
                          get_channel_transfers, set_channel_transfers)
-from tcx.imageio_utils import discover_pairs, load_image, save_image, split_pair
+from tcx.imageio_utils import (discover_pairs, load_image, match_names, save_image,
+                               split_pair)
 from tcx.lut3d import apply_lut3d, fit_lut3d, write_cube
 from tcx.model import BAND_NAMES, GradeZone, HSLBand, PresetModel
 from tcx.render import (apply_exposure, band_weights, grade_masks, invert_post, render)
@@ -381,6 +382,66 @@ def test_discover_pairs(tmp_path):
 
 
 # ---------------------------------------------------------------------- XMP
+@pytest.mark.parametrize("befores,afters,expect", [
+    (["s3_before.jpg", "s1_before.jpg", "s2_before.jpg"],
+     ["s2_after.jpg", "s3_after.jpg", "s1_after.jpg"],
+     [("s3_before.jpg", "s3_after.jpg"), ("s1_before.jpg", "s1_after.jpg"),
+      ("s2_before.jpg", "s2_after.jpg")]),
+    (["01-Nostargia_before.jpg"], ["01-Nostargia_after.jpg"],
+     [("01-Nostargia_before.jpg", "01-Nostargia_after.jpg")]),
+    (["DSC001.jpg", "DSC003.jpg", "DSC002.jpg"], ["e3.jpg", "e1.jpg", "e2.jpg"],
+     [("DSC001.jpg", "e1.jpg"), ("DSC002.jpg", "e2.jpg"), ("DSC003.jpg", "e3.jpg")]),
+])
+def test_match_names_pairs_uploads_regardless_of_order(befores, afters, expect):
+    got = [(befores[i], afters[j]) for i, j in match_names(befores, afters)]
+    assert got == expect
+
+
+def test_match_names_keeps_trailing_letters_of_real_words():
+    """A single-letter role suffix needs a separator, or 'Nostargia' becomes
+    'Nostargi' and unrelated files start matching."""
+    from tcx.imageio_utils import _pair_key
+    assert _pair_key("01-Nostargia_before.jpg") == "01-nostargia"
+    assert _pair_key("01-Nostargia_after.jpg") == "01-nostargia"
+    assert _pair_key("shot_a.jpg") == "shot"
+
+
+def test_match_names_rejects_unequal_counts():
+    with pytest.raises(ValueError, match="counts must match"):
+        match_names(["a_before.jpg", "b_before.jpg"], ["a_after.jpg"])
+
+
+def test_webapp_pairs_six_uploads_and_flags_a_bad_one(tmp_path):
+    from tcx.webapp import create_app
+    look = known_preset()
+    names = []
+    for i in range(4):
+        shot = synthetic_photo(200, 300, seed=500 + i)
+        save_image(str(tmp_path / f"0{i}-X_before.jpg"), shot)
+        save_image(str(tmp_path / f"0{i}-X_after.jpg"), render(shot, look))
+        names.append(f"0{i}-X")
+    # a pair whose "after" is a different photograph entirely
+    save_image(str(tmp_path / "zz_before.jpg"), synthetic_photo(200, 300, seed=42))
+    save_image(str(tmp_path / "zz_after.jpg"), synthetic_photo(200, 300, seed=7))
+    names.append("zz")
+
+    client = create_app(str(tmp_path / "work")).test_client()
+    resp = client.post("/extract", content_type="multipart/form-data", data={
+        "before": [(open(tmp_path / f"{n}_before.jpg", "rb"), f"{n}_before.jpg")
+                   for n in names],
+        # handed over in the opposite order on purpose
+        "after": [(open(tmp_path / f"{n}_after.jpg", "rb"), f"{n}_after.jpg")
+                  for n in reversed(names)],
+        "name": "T", "color_mode": "curves", "iterations": "2", "smooth": "2.0"})
+    body = resp.data.decode()
+    assert resp.status_code == 200 and "エラー:" not in body
+    table = body[body.index("</form>"):]
+    for n in names:
+        row = f"<td>{n}_before.jpg</td><td>{n}_after.jpg</td>"
+        assert row in table, f"{n} was mis-paired"
+    assert "誤差が突出しているペア" in table
+
+
 def test_xmp_is_wellformed_and_complete():
     import xml.dom.minidom as md
     m = PresetModel(name="T")
