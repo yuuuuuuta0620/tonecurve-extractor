@@ -78,7 +78,7 @@ def cmd_extract(a) -> int:
         detect_frozen=not a.no_frozen_detect, reject_sigma=a.reject_sigma,
         normalize_pair_exposure=not a.no_normalize_pairs,
         normalize_pair_white_balance=not a.no_normalize_wb,
-        colour_guide=not a.no_guide,
+        colour_guide=not a.no_guide, n_patches=a.patches,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
@@ -93,7 +93,11 @@ def cmd_extract(a) -> int:
     xmp = write_xmp(xmp_path, model)
     model.to_json(os.path.join(a.outdir, stem + ".json"))
     with open(os.path.join(a.outdir, stem + ".diagnostics.json"), "w", encoding="utf-8") as f:
-        json.dump(diag, f, indent=1, ensure_ascii=False)
+        from .guide import patches_json
+        dumpable = dict(diag)
+        if dumpable.get("patches"):
+            dumpable["patches"] = patches_json(dumpable["patches"])
+        json.dump(dumpable, f, indent=1, ensure_ascii=False, default=float)
 
     outputs = [xmp_path]
     if not a.no_report:
@@ -180,10 +184,18 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
             flag = "  <- far worse than the rest; check this pair" if des[i] > cut else ""
             print(f"  {i + 1:>2}  ΔE {des[i]:>6.2f}   exposure {ev} EV{flag}")
 
+    look = diag.get("look_description")
+    if look and look.get("traits"):
+        print("\nthe look, in words")
+        print("  " + look["summary_en"])
+        for t in look["traits"]:
+            print(f"    · {t['en']:<52} [{t['evidence']}]")
+
     g = diag.get("colour_guide")
     if g:
-        from .guide import format_guide
+        from .guide import format_guide, format_patches
         print(format_guide(g))
+        print(format_patches(diag.get("patches") or []))
 
     re_ = diag.get("residual_explained")
     if re_:
@@ -284,6 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not level the exposure differences between sample pairs")
     e.add_argument("--no-normalize-wb", action="store_true",
                    help="level exposure between pairs but leave their white balance alone")
+    e.add_argument("--patches", type=int, default=6, metavar="N",
+                   help="how many characteristic colour-change crops to show")
     e.add_argument("--no-guide", action="store_true",
                    help="skip the written colour guide")
     e.add_argument("--diagnose", action="store_true",

@@ -160,6 +160,56 @@ def _chip(rgb) -> str:
             f'border:1px solid #0003;background:{c};vertical-align:-3px"></span>')
 
 
+def _img_tag(arr, height=132) -> str:
+    import io as _io
+    from PIL import Image
+    a = (np.clip(arr, 0, 1) * 255 + 0.5).astype(np.uint8)
+    buf = _io.BytesIO()
+    Image.fromarray(a).save(buf, "PNG")
+    return (f'<img style="height:{height}px;width:auto;border-radius:4px;margin:0" '
+            f'src="data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}">')
+
+
+def patches_html(patches: list[dict]) -> str:
+    if not patches:
+        return ""
+    cards = []
+    for i, c in enumerate(patches, 1):
+        hue = (f"色相 {c['hue_shift_deg']:+.0f}°" if c["hue_shift_deg"] is not None else "色相 —")
+        sat = (f"彩度 {c['saturation_pct']:+.0f}%" if c["saturation_pct"] is not None
+               else "彩度 —")
+        cards.append(f"""
+<div style="display:inline-block;vertical-align:top;margin:0 18px 20px 0;max-width:330px">
+ <div style="font-size:12.5px;color:#555;margin-bottom:4px">
+  {i}. {c['band']} — ΔE {c['dE']}</div>
+ <div>{_img_tag(c['crop_tone'])} {_img_tag(c['crop_after'])}</div>
+ <div style="font-size:11.5px;color:#777;margin:2px 0 4px">
+  左：トーンカーブのみ　右：目標</div>
+ <div style="font-size:12.5px">
+  {_chip(c['before'])} → {_chip(c['after'])}
+  &nbsp; {hue} / {sat} / 明度 {c['lightness_pct']:+.0f}%</div>
+</div>""")
+    return f"""
+<h2>特徴的な色の変化（ポイントカラーの狙い目）</h2>
+<p class="sub">左の色を Lightroom のポイントカラーで拾い、右の色になるまで動かしてください。
+トーンカーブ適用後の状態を基準にしているので、先にカーブを当ててから作業します。</p>
+{''.join(cards)}
+"""
+
+
+def look_html(d: dict) -> str:
+    if not d or not d.get("traits"):
+        return ""
+    rows = "".join(f"<tr><td>{html.escape(t['ja'])}</td>"
+                   f"<td style='color:#777;font-size:12px'>{html.escape(t['evidence'])}</td></tr>"
+                   for t in d["traits"])
+    return f"""
+<h2>このプリセットの性格</h2>
+<p class="sub" style="font-size:15px;color:#1c1c1e">{html.escape(d['summary_ja'])}</p>
+<table><tr><th>特徴</th><th>根拠となった実測値</th></tr>{rows}</table>
+"""
+
+
 def guide_html(g: dict) -> str:
     if not g:
         return ""
@@ -185,6 +235,11 @@ def guide_html(g: dict) -> str:
 
     mrows = []
     for m in g["memory_colours"]:
+        if m.get("measurable") is False:
+            mrows.append(f"<tr><td>{html.escape(m['colour'])}</td>"
+                         f"<td colspan=5 style='text-align:left;color:#888'>"
+                         f"この写真には十分に含まれていないため測定不能</td></tr>")
+            continue
         pct = f" ({m['chroma_pct']:+.0f}%)" if m.get("chroma_pct") is not None else ""
         hue = f"{m['hue_shift_deg']:+.0f}°" if m.get("hue_shift_deg") is not None else "—"
         note = "" if m["source"].startswith("measured") else " <i>(予測)</i>"
@@ -211,6 +266,15 @@ def guide_html(g: dict) -> str:
 """
 
 
+def _dumpable(diag: dict) -> dict:
+    """The diagnostics minus the patch crops, which are pictures not data."""
+    from .guide import patches_json
+    out = dict(diag)
+    if out.get("patches"):
+        out["patches"] = patches_json(out["patches"])
+    return out
+
+
 def write_html(path: str, model: PresetModel, diag: dict, png: bytes, xmp: str) -> None:
     b64 = base64.b64encode(png).decode()
     body = f"""<!doctype html>
@@ -233,11 +297,13 @@ def write_html(path: str, model: PresetModel, diag: dict, png: bytes, xmp: str) 
 <p class="sub">extracted by tonecurve-extractor · {diag.get('n_pairs')} pair(s) ·
 {diag.get('n_samples', 0):,} samples · {diag.get('elapsed_sec')}s</p>
 <img src="data:image/png;base64,{b64}">
+{look_html(diag.get("look_description"))}
+{patches_html(diag.get("patches") or [])}
 {guide_html(diag.get("colour_guide"))}
 <h2>Lightroom preset (.xmp)</h2>
 <pre>{html.escape(xmp)}</pre>
 <h2>Full diagnostics</h2>
-<pre>{html.escape(json.dumps(diag, indent=1, ensure_ascii=False))}</pre>
+<pre>{html.escape(json.dumps(_dumpable(diag), indent=1, ensure_ascii=False, default=float))}</pre>
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(body)

@@ -64,6 +64,7 @@ class ExtractOptions:
     pair_inputs_prepared: bool = False
     #: measure the colour work in human terms, for reproducing by hand
     colour_guide: bool = True
+    n_patches: int = 6                # crops of characteristic colour changes
     name: str = "Extracted Preset"
     group: str = "tcx"
     calibration: Calibration = field(default_factory=Calibration)
@@ -440,8 +441,16 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             f"something it cannot express, not that the preset really is that extreme."]
 
     if opts.colour_guide:
-        from .guide import build_guide
-        diag["colour_guide"] = build_guide(B, A, W0, model, diag.get("hsl_detail"))
+        from .guide import build_guide, characteristic_patches, describe_look
+        g = build_guide(B, A, W0, model, diag.get("hsl_detail"))
+        diag["colour_guide"] = g
+        diag["look_description"] = describe_look(
+            model, g, {"exposure_ev": diag.get("implied_exposure_ev")})
+        model.meta["look"] = diag["look_description"]["summary_en"]
+        try:
+            diag["patches"] = characteristic_patches(pairs, model, opts.n_patches)
+        except Exception as e:                     # never lose a fit over a nicety
+            diag["patches_error"] = f"{type(e).__name__}: {e}"
 
     diag["diagnostics"] = basic.diagnose(model, B, A, W)
     diag["elapsed_sec"] = round(time.time() - t0, 2)

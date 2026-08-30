@@ -292,6 +292,42 @@ Lightroom で自分で当てられます。
 色の情報は壊れやすいものの、捨てるには価値が大きすぎます。
 `tone` は「自分で色を作りたい／トーンだけ確実に欲しい」場合の選択肢と考えてください。
 
+#### このプリセットの性格（言語化）
+
+実測値のしきい値判定で、ルックを言葉にします。**すべての記述に根拠の数値が付きます。**
+
+```
+the look, in words
+  lifted, matte blacks; soft, flattened midtones; an overall warm orange cast
+  through the whole range; Aqua, Green pulled down while the rest is left;
+  Magenta pushed up; Green rotated -20°; brighter by 0.8 EV
+    · lifted, matte blacks                                [black point 21/255]
+    · soft, flattened midtones                            [mid slope 0.87]
+    · an overall warm orange cast through the whole range [shadows 5.5, highlights 5.6 ΔE]
+    · Aqua, Green pulled down while the rest is left      [Aqua -17%, Green -14%]
+    · Green rotated -20°                                  [Green hue -20.4°]
+```
+
+#### 特徴的な色の変化（ポイントカラーの狙い目）
+
+**色の変化が大きく、かつ色として読める領域**を画像から自動で探して、
+実際のクロップを before / after で並べます。左の色を Lightroom のポイントカラーで拾い、
+右になるまで動かせば再現できます。
+
+```
+characteristic colour changes — targets for Point Colour
+  1. Green    from 134 232 100  to 166 223 111   hue -14°  sat -13%  lum  +0%   ΔE 5.05
+  2. Green    from 143 237 189  to 185 228 191   hue -21°  sat -38%  lum  +9%   ΔE 7.75
+  3. Orange   from 249 122  60  to 240 124  95   hue  -8°  sat -11%  lum  +8%   ΔE 7.69
+  4. Blue     from 113 166 232  to 115 147 229   hue +10°  sat  -5%  lum  -1%   ΔE 6.67
+```
+
+選び方は3条件：**変化量が大きい** × **平坦で色として読める**（エッジではない）×
+**色相がばらける**（同じ色のクロップが並ばないよう1色相2枚まで、空間的にも離す）。
+HTML レポートには実画像のクロップが並びます。枚数は `--patches N`。
+
+すべて**トーンカーブ適用後**を基準にしているので、先にカーブを当ててから作業してください。
+
 #### カラーガイド
 
 どのモードでも、**トーンカーブを当てた後に残る色の作業**が実測値で出ます
@@ -455,6 +491,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 | `--no-normalize-wb` | off | 露出だけ均し、ホワイトバランスは触らない |
 | `--diagnose` | off | 各ペア単独でもフィットして、限界か改善可能かを判定 |
 | `--no-guide` | off | 手動再現用のカラーガイドを省略 |
+| `--patches N` | 6 | 特徴的な色変化のクロップ枚数 |
 | `--reject-sigma S` | 6.0 | プリセットで説明できない画素の棄却しきい値。0 で無効 |
 | `--iterations N` | 3 | 座標降下の反復回数。4〜5 で概ね収束 |
 | `--smooth F` | 2.0 | トーンカーブの平滑化強度。ノイズの多い素材では上げる |
@@ -472,7 +509,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 47 テスト、約 120 秒
+.venv/bin/python -m pytest tests -q          # 50 テスト、約 135 秒
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```
@@ -485,7 +522,7 @@ tcx/
   render.py      順方向レンダラと各段の逆変換（＝プリセットの定義）
   hsl.py         8 バンド HSL のロバスト連立フィット
   grading.py     カラーグレーディングの非線形フィット
-  guide.py       手動再現用のカラーガイド（実測値）
+  guide.py       手動再現用のカラーガイド、特徴的な色のクロップ、ルックの言語化
   extract.py     反復座標降下の統括
   lut3d.py       正則化付き 3D LUT 推定と .cube 出力
   xmp.py         Lightroom プリセット書き出し

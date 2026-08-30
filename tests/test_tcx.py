@@ -443,6 +443,63 @@ def test_colour_guide_measures_the_work_left_after_the_tone_curve():
     assert "colour guide" in format_guide(g)
 
 
+def test_characteristic_patches_are_varied_and_serialisable():
+    from tcx.guide import characteristic_patches, format_patches, patches_json
+    before = synthetic_photo(400, 600, seed=23)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
+                                              working_space=look.working_space))
+    patches = characteristic_patches([pair], model, n_patches=6)
+    assert 3 <= len(patches) <= 6
+    # never more than two crops of the same hue family, and none overlapping
+    from collections import Counter
+    assert max(Counter(c["band"] for c in patches).values()) <= 2
+    for i, a in enumerate(patches):
+        for b in patches[i + 1:]:
+            if a["pair"] == b["pair"]:
+                assert (abs(a["y"] - b["y"]) >= 3 * a["size"]
+                        or abs(a["x"] - b["x"]) >= 3 * a["size"])
+    for c in patches:
+        assert c["crop_before"].ndim == 3 and c["crop_after"].shape == c["crop_before"].shape
+        assert c["dE"] > 0
+    json.dumps(patches_json(patches))          # must survive serialisation
+    assert "Point Colour" in format_patches(patches)
+
+
+def test_look_description_cites_its_evidence():
+    from tcx.guide import build_guide, describe_look
+    before = synthetic_photo(360, 540, seed=29)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, diag = extract([pair], ExtractOptions(iterations=3,
+                                                 working_space=look.working_space))
+    d = diag["look_description"]
+    assert d["traits"], d
+    for t in d["traits"]:
+        assert t["en"] and t["ja"] and t["evidence"]
+    ids = {t["id"] for t in d["traits"]}
+    # the known preset lifts blacks and flattens the midtones
+    assert "lifted_blacks" in ids and "soft" in ids, ids
+
+
+def test_tone_only_guide_does_not_invent_unmeasurable_colours():
+    """A tone-only preset has no colour to predict with; saying a colour is
+    unchanged would be a different claim from saying it was not measurable."""
+    from tcx.guide import format_guide
+    before = synthetic_photo(200, 300, seed=31)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    _, diag = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
+                                             working_space=look.working_space))
+    mem = diag["colour_guide"]["memory_colours"]
+    for m in mem:
+        if m.get("measurable") is False:
+            assert "not measurable" in m["source"]
+            assert "dE" not in m or m["dE"] is None or m["source"].startswith("not")
+    format_guide(diag["colour_guide"])
+
+
 def test_lut3d_beats_or_matches_preset(synthetic):
     from tcx import metrics as M
     before, after, _ = synthetic
