@@ -84,8 +84,15 @@ def make_figure(model: PresetModel, diag: dict, pairs) -> bytes:
     d = diag.get("diagnostics", {})
     vm = diag.get("verification_mean", {})
     bm = diag.get("baseline_mean", {})
+    sel = diag.get("working_space_selection") or {}
+    ws_line = f"working space     : {diag.get('working_space')}"
+    if sel:
+        by = "  ".join(f"{k} {v}" for k, v in sel["dE_mean_by_space"].items())
+        ws_line += f"   (chosen by fit — ΔE {by})"
     lines = [
         f"pairs used        : {diag.get('n_pairs')}   samples: {diag.get('n_samples'):,}",
+        ws_line,
+        f"measured range    : {diag.get('input_support')}",
         f"curve coverage    : {diag.get('curve_coverage')}",
         "",
         "── fit quality (rendered vs. real after) ──",

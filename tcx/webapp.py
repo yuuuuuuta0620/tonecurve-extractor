@@ -12,7 +12,7 @@ import numpy as np
 from flask import Flask, Response, abort, render_template_string, request, send_file
 
 from .align import align_pair, sample_pixels
-from .extract import ExtractOptions, extract
+from .extract import ExtractOptions, extract_auto
 from .imageio_utils import load_image, split_pair
 from .model import Calibration
 from .report import make_figure
@@ -152,7 +152,7 @@ def create_app(workdir: str | None = None) -> Flask:
                 iterations=int(request.form.get("iterations", 4)),
                 smooth=float(request.form.get("smooth", 2.0)),
                 name=request.form.get("name") or "Extracted Preset")
-            model, diag = extract(aligned, opts)
+            model, diag = extract_auto(aligned, opts)
 
             xmp = build_xmp(model)
             open(os.path.join(d, "preset.xmp"), "w", encoding="utf-8").write(xmp)

@@ -11,7 +11,7 @@ import numpy as np
 from . import __version__
 from . import curves as C
 from .align import align_pair
-from .extract import ExtractOptions, extract
+from .extract import ExtractOptions, extract_auto
 from .imageio_utils import (load_image, save_image, split_pair, discover_pairs, fetch_url)
 from .lut3d import fit_lut3d, write_cube, apply_lut3d
 from .model import PresetModel, Calibration
@@ -65,9 +65,10 @@ def cmd_extract(a) -> int:
         iterations=a.iterations, max_samples=a.max_samples, smooth=a.smooth,
         max_points=a.max_points, fit_hsl=not a.no_hsl, fit_hsl_hue=not a.no_hue,
         fit_hsl_lum=not a.no_hsl_lum, grading_global=a.grading_global,
-        quantize=not a.no_quantize, name=a.name, group=a.group, calibration=cal)
+        quantize=not a.no_quantize, working_space=a.working_space,
+        name=a.name, group=a.group, calibration=cal)
 
-    model, diag = extract(pairs, opts)
+    model, diag = extract_auto(pairs, opts)
 
     os.makedirs(a.outdir, exist_ok=True)
     stem = a.stem or "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in a.name)
@@ -114,7 +115,20 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
     d = diag["diagnostics"]
     print(f"\n{model.name}")
     print("=" * max(40, len(model.name)))
-    print(f"pairs {diag['n_pairs']} · samples {diag['n_samples']:,} · {diag['elapsed_sec']}s")
+    print(f"pairs {diag['n_pairs']} · samples {diag['n_samples']:,} · "
+          f"working space {diag.get('working_space')} · {diag['elapsed_sec']}s")
+    sel = diag.get("working_space_selection")
+    if sel:
+        by = "  ".join(f"{k}={v}" for k, v in sel["dE_mean_by_space"].items())
+        print(f"  working space chosen by fit: {sel['chosen']}  (ΔE by space: {by})")
+        if sel["margin"] is not None and sel["margin"] < 0.15:
+            print("  ! the two spaces fit almost equally well; this pair cannot "
+                  "distinguish them")
+    ws = diag.get("working_space_sensitivity", {})
+    if ws:
+        print(f"  applying these curves in '{ws['alternative']}' space instead "
+              f"would shift the result by ΔE "
+              f"{ws['dE_mean_if_applied_in_alternative_space']}")
     print("\nfit quality (extracted preset vs. the real 'after')")
     print(f"  ΔE2000 mean   {vm['dE_mean']:>7}   unedited {bm['dE_mean']:>7}")
     print(f"  ΔE2000 p95    {vm['dE_p95']:>7}   unedited {bm['dE_p95']:>7}")
@@ -195,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "grading: express colour with the colour-grading wheels. "
                         "both: curves plus a residual grading fit.")
     e.add_argument("--saturation-mode", choices=["hsl", "basic"], default="hsl")
+    e.add_argument("--working-space", choices=["auto", "melissa", "srgb"], default="auto",
+                   help="space the edit is fitted and applied in. 'melissa' = "
+                        "ProPhoto primaries + sRGB tone response, which is what "
+                        "Lightroom's Develop module uses; 'srgb' takes the JPEGs at "
+                        "face value; 'auto' (default) fits both and keeps whichever "
+                        "explains the pair better.")
     e.add_argument("--iterations", type=int, default=3)
     e.add_argument("--max-samples", type=int, default=1_500_000)
     e.add_argument("--max-dim", type=int, default=1600)

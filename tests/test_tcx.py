@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tcx import colorspace as cs
 from tcx import curves as C
 from tcx.align import align_pair, sample_pixels
-from tcx.extract import ExtractOptions, extract, get_channel_transfers, set_channel_transfers
+from tcx.extract import (ExtractOptions, extract, extract_auto,
+                         get_channel_transfers, set_channel_transfers)
 from tcx.imageio_utils import discover_pairs, load_image, save_image, split_pair
 from tcx.lut3d import apply_lut3d, fit_lut3d, write_cube
 from tcx.model import BAND_NAMES, GradeZone, HSLBand, PresetModel
@@ -102,8 +103,65 @@ def test_stage_inverses():
     m.grade["Highlight"] = GradeZone(40, 14, 3)
     m.saturation, m.vibrance = 8, 15
     x = np.random.default_rng(3).random((20000, 3))
-    y = render(x, m)
-    assert np.abs(render(invert_post(y, m), m) - y).max() < 2e-3
+    # checked inside the working space: converting back to sRGB can clip
+    # colours the edit pushed out of gamut, and clipping is not invertible
+    xw = cs.to_working(x, m.working_space)
+    yw = render(xw, m, in_working_space=True)
+    back = render(invert_post(yw, m, in_working_space=True), m, in_working_space=True)
+    err = np.abs(back - yw)
+    ok = (yw > 0.01) & (yw < 0.99)
+    assert err[ok].max() < 2e-3, err[ok].max()
+    assert err.max() < 1e-2, err.max()
+
+
+@pytest.mark.parametrize("space", ["srgb", "melissa"])
+def test_working_space_roundtrip_and_neutral_axis(space):
+    m = PresetModel(working_space=space)
+    x = np.random.default_rng(5).random((5000, 3))
+    assert np.abs(cs.from_working(cs.to_working(x, space), space) - x).max() < 1e-9
+    # the two spaces must agree exactly on neutrals -- that is what makes the
+    # master curve transfer faithfully regardless of the choice
+    g = np.repeat(np.linspace(0, 1, 256)[:, None], 3, axis=1)
+    assert np.abs(cs.to_working(g, space) - g).max() < 1e-6
+
+
+def _pair_of_spaces(luts):
+    from tcx.extract import set_channel_transfers
+    a, b = PresetModel(working_space="srgb"), PresetModel(working_space="melissa")
+    for m in (a, b):
+        set_channel_transfers(m, luts)
+    return a, b
+
+
+def test_working_space_agrees_on_neutral_pixels():
+    """A master (R=G=B) curve maps a grey pixel identically in both spaces --
+    that is why overall tonality transfers to Lightroom regardless."""
+    g = np.linspace(0, 1, C.LUT_N)
+    mono = np.clip(np.maximum.accumulate(g ** 0.85 + 0.08 * np.sin(np.pi * g)), 0, 1)
+    a, b = _pair_of_spaces([mono, mono, mono])
+    grey = np.repeat(np.linspace(0.02, 0.98, 200)[:, None], 3, axis=1)
+    assert np.abs(render(grey, a) - render(grey, b)).max() < 1e-6
+
+
+def test_working_space_matters_most_for_per_channel_colour():
+    """On photographic content the working space barely moves a neutral
+    curve, but it moves a per-channel colour curve a lot: ProPhoto's primaries
+    are far more saturated, so the same channel imbalance reads as a much
+    stronger tint there than it does in sRGB."""
+    g = np.linspace(0, 1, C.LUT_N)
+    mono = np.clip(np.maximum.accumulate(g ** 0.85 + 0.08 * np.sin(np.pi * g)), 0, 1)
+    colour = [np.clip(np.maximum.accumulate(g + o * np.sin(np.pi * g)), 0, 1)
+              for o in (0.06, 0.0, -0.05)]
+    x = synthetic_photo(300, 450, seed=9).reshape(-1, 3)
+
+    def gap(luts):
+        a, b = _pair_of_spaces(luts)
+        return float(cs.delta_e2000(cs.rgb_to_lab(render(x, a)),
+                                    cs.rgb_to_lab(render(x, b))).mean())
+
+    g_mono, g_colour = gap([mono] * 3), gap(colour)
+    assert g_mono < 1.5, g_mono
+    assert g_colour > 4 * g_mono, (g_mono, g_colour)
 
 
 def test_channel_transfer_decomposition_is_lossless():
@@ -125,10 +183,31 @@ def synthetic():
     return before, after, truth
 
 
+def test_extract_rejects_abstract_working_space():
+    with pytest.raises(ValueError, match="concrete working space"):
+        extract([], ExtractOptions(working_space="auto"))
+
+
+@pytest.mark.parametrize("truth_space", ["srgb", "melissa"])
+def test_auto_identifies_the_space_the_edit_was_made_in(truth_space):
+    """A per-channel curve in one space is not expressible as a per-channel
+    curve in the other, so the residual reveals which one the editor used."""
+    before = synthetic_photo(400, 600, seed=21)
+    truth = known_preset()
+    truth.working_space = truth_space
+    pair = align_pair(before, render(before, truth), do_align=False, blur_sigma=0.0)
+    model, diag = extract_auto([pair], ExtractOptions(iterations=3))
+    sel = diag["working_space_selection"]
+    assert sel["chosen"] == truth_space, sel
+    assert model.working_space == truth_space
+    assert sel["margin"] > 0.3, sel
+
+
 def test_extract_recovers_known_preset(synthetic):
     before, after, truth = synthetic
     pair = align_pair(before, after, do_align=False, blur_sigma=0.0)
-    model, diag = extract([pair], ExtractOptions(iterations=4))
+    model, diag = extract([pair], ExtractOptions(iterations=4,
+                                                working_space=truth.working_space))
 
     v, b = diag["verification_mean"], diag["baseline_mean"]
     assert v["dE_mean"] < 1.0, v
@@ -160,7 +239,7 @@ def test_extract_survives_jpeg_resize_and_shift(synthetic):
                          borderMode=cv2.BORDER_REPLICATE)
     pair = align_pair(jpeg(before), jpeg(np.clip(big, 0, 1)))
     assert pair.info["ncc_after_align"] >= pair.info["ncc_before_align"]
-    model, diag = extract([pair], ExtractOptions(iterations=3))
+    model, diag = extract_auto([pair], ExtractOptions(iterations=3))
     assert diag["verification_mean"]["dE_mean"] < 2.5
 
 
@@ -168,7 +247,7 @@ def test_lut3d_beats_or_matches_preset(synthetic):
     from tcx import metrics as M
     before, after, _ = synthetic
     pair = align_pair(before, after, do_align=False, blur_sigma=0.0)
-    model, _ = extract([pair], ExtractOptions(iterations=3))
+    model, _ = extract_auto([pair], ExtractOptions(iterations=3))
     B, A, W = sample_pixels([pair], 200_000)
     lut = fit_lut3d(B, A, W, model=model, size=17)
     got = M.compare(apply_lut3d(pair.before, lut), pair.after, pair.weight)

@@ -66,6 +66,13 @@ class PresetModel:
     saturation: float = 0.0   # Basic panel Saturation (only in --saturation-mode basic)
     vibrance: float = 0.0     # Basic panel Vibrance
 
+    #: colour space the whole edit is applied in.  "melissa" = ProPhoto
+    #: primaries with the sRGB tone response, which is what Lightroom's
+    #: Develop module is understood to use; "srgb" applies everything in
+    #: plain sRGB.  Only affects saturated colours -- the two spaces are
+    #: identical on the neutral axis.
+    working_space: str = "melissa"
+
     calibration: Calibration = field(default_factory=Calibration)
     name: str = "Extracted Preset"
     group: str = "tcx"
@@ -99,6 +106,7 @@ class PresetModel:
             "grade_balance": self.grade_balance,
             "saturation": self.saturation,
             "vibrance": self.vibrance,
+            "working_space": self.working_space,
             "calibration": asdict(self.calibration),
             "meta": self.meta,
         }
@@ -124,6 +132,7 @@ class PresetModel:
         m.grade_balance = d.get("grade_balance", m.grade_balance)
         m.saturation = d.get("saturation", 0.0)
         m.vibrance = d.get("vibrance", 0.0)
+        m.working_space = d.get("working_space", m.working_space)
         if "calibration" in d:
             m.calibration = Calibration(**d["calibration"])
         m.meta = d.get("meta", {})

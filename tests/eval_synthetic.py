@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tcx import curves as C
 from tcx.align import align_pair
-from tcx.extract import ExtractOptions, extract, get_channel_transfers
+from tcx.extract import ExtractOptions, extract_auto, get_channel_transfers
 from tcx.imageio_utils import load_image, save_image
 from tcx.model import BAND_NAMES
 from examples.make_synthetic import synthetic_photo, known_preset
@@ -20,7 +20,7 @@ from tcx.render import render
 def score(truth, got, before, after, tag, iterations=4, **kw):
     pair = align_pair(before, after, max_dim=1600, do_align=False, blur_sigma=0.0)
     opts = ExtractOptions(iterations=iterations, name=tag, **kw)
-    model, diag = extract([pair], opts)
+    model, diag = extract_auto([pair], opts)
 
     ft = get_channel_transfers(truth)
     fg = get_channel_transfers(model)
@@ -39,6 +39,9 @@ def score(truth, got, before, after, tag, iterations=4, **kw):
           f"p95 {v['dE_p95']:>6}   PSNR {v['psnr_db']} dB")
     print(f"  transfer-curve MAE (0-255): R {curve_err[0]:.2f}  G {curve_err[1]:.2f}  B {curve_err[2]:.2f}")
     print(f"  mean |slider error|: {hsl_err:.2f}")
+    sel = diag.get("working_space_selection")
+    if sel:
+        print(f"  working space chosen: {sel['chosen']}  (ΔE {sel['dE_mean_by_space']})")
     print("  band      hue(t/g)     sat(t/g)     lum(t/g)")
     for n, th, gh, ts, gs, tl, gl in rows:
         if abs(th) + abs(ts) + abs(tl) + abs(gh) + abs(gs) + abs(gl) > 3:

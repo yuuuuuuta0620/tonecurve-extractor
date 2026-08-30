@@ -154,3 +154,62 @@ def delta_e2000(lab1: np.ndarray, lab2: np.ndarray) -> np.ndarray:
 
     return np.sqrt((dLp / Sl) ** 2 + (dCp / Sc) ** 2 + (dHp / Sh) ** 2
                    + Rt * (dCp / Sc) * (dHp / Sh))
+
+
+# --------------------------------------------------------------------------
+# Lightroom's develop working space
+#
+# Lightroom / Camera Raw do not edit in sRGB: the Develop module works in
+# ProPhoto RGB primaries, and the values its histogram, RGB readout and tone
+# curve operate on are those primaries carried by the sRGB tone response --
+# the space commonly called "Melissa RGB".  A per-channel curve measured on
+# an sRGB JPEG therefore does *not* mean the same thing once Lightroom
+# applies it, except on the neutral axis where the two spaces coincide.
+#
+# This is the community-documented behaviour rather than a published Adobe
+# specification, which is why the working space is a switch (--working-space)
+# and why tcx reports how much the choice matters for your images.
+# --------------------------------------------------------------------------
+
+_BRADFORD = np.array([[0.8951, 0.2664, -0.1614],
+                      [-0.7502, 1.7135, 0.0367],
+                      [0.0389, -0.0685, 1.0296]])
+_D50 = np.array([0.96422, 1.00000, 0.82521])
+_M_PROPHOTO2XYZ_D50 = np.array([
+    [0.7976749, 0.1351917, 0.0313534],
+    [0.2880402, 0.7118741, 0.0000857],
+    [0.0000000, 0.0000000, 0.8252100],
+])
+
+_adapt_d65_d50 = (np.linalg.inv(_BRADFORD)
+                  @ np.diag((_BRADFORD @ _D50) / (_BRADFORD @ _D65))
+                  @ _BRADFORD)
+M_SRGB_TO_PROPHOTO = np.linalg.inv(_M_PROPHOTO2XYZ_D50) @ _adapt_d65_d50 @ _M_RGB2XYZ
+M_PROPHOTO_TO_SRGB = np.linalg.inv(M_SRGB_TO_PROPHOTO)
+
+WORKING_SPACES = ("srgb", "melissa")
+
+
+def srgb_to_melissa(rgb: np.ndarray) -> np.ndarray:
+    """sRGB-encoded sRGB  ->  sRGB-encoded ProPhoto primaries."""
+    lin = srgb_to_linear(np.clip(rgb, 0.0, 1.0)) @ M_SRGB_TO_PROPHOTO.T
+    return linear_to_srgb(np.clip(lin, 0.0, 1.0))
+
+
+def melissa_to_srgb(rgb: np.ndarray) -> np.ndarray:
+    lin = srgb_to_linear(np.clip(rgb, 0.0, 1.0)) @ M_PROPHOTO_TO_SRGB.T
+    return np.clip(linear_to_srgb(np.clip(lin, 0.0, 1.0)), 0.0, 1.0)
+
+
+def _check_space(space: str) -> str:
+    if space not in WORKING_SPACES:
+        raise ValueError(f"unknown working space {space!r}; expected one of {WORKING_SPACES}")
+    return space
+
+
+def to_working(rgb: np.ndarray, space: str) -> np.ndarray:
+    return srgb_to_melissa(rgb) if _check_space(space) == "melissa" else np.clip(rgb, 0.0, 1.0)
+
+
+def from_working(rgb: np.ndarray, space: str) -> np.ndarray:
+    return melissa_to_srgb(rgb) if _check_space(space) == "melissa" else np.clip(rgb, 0.0, 1.0)

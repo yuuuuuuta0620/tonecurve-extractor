@@ -131,19 +131,26 @@ def apply_basic_saturation(rgb: np.ndarray, m: PresetModel) -> np.ndarray:
     return np.clip(cs.hsl_to_rgb(h, np.clip(s, 0.0, 1.0), l), 0.0, 1.0)
 
 
-def render(rgb: np.ndarray, m: PresetModel, upto: str = "all") -> np.ndarray:
-    """Apply the preset.  ``upto`` in {curves, hsl, grading, all}."""
+def render(rgb: np.ndarray, m: PresetModel, upto: str = "all",
+           in_working_space: bool = False) -> np.ndarray:
+    """Apply the preset.  ``upto`` in {curves, hsl, grading, all}.
+
+    The whole edit happens in ``m.working_space``; pass
+    ``in_working_space=True`` when the input is already converted (the
+    extractor works there to avoid converting on every iteration).
+    """
     out = np.clip(np.asarray(rgb, dtype=np.float64), 0.0, 1.0)
+    if not in_working_space:
+        out = cs.to_working(out, m.working_space)
+
     out = apply_curves(out, m)
-    if upto == "curves":
-        return out
-    out = apply_hsl(out, m)
-    if upto == "hsl":
-        return out
-    out = apply_grading(out, m)
-    if upto == "grading":
-        return out
-    return apply_basic_saturation(out, m)
+    if upto != "curves":
+        out = apply_hsl(out, m)
+        if upto != "hsl":
+            out = apply_grading(out, m)
+            if upto != "grading":
+                out = apply_basic_saturation(out, m)
+    return out if in_working_space else cs.from_working(out, m.working_space)
 
 
 # --------------------------------------------------------------------------
@@ -217,9 +224,12 @@ def invert_basic_saturation(rgb: np.ndarray, m: PresetModel, iters: int = 6) -> 
     return np.clip(cs.hsl_to_rgb(h, np.clip(s, 0.0, 1.0), l), 0.0, 1.0)
 
 
-def invert_post(rgb: np.ndarray, m: PresetModel) -> np.ndarray:
+def invert_post(rgb: np.ndarray, m: PresetModel,
+                in_working_space: bool = False) -> np.ndarray:
     """Undo everything after the tone curves, so curves can be re-fitted
     directly in their own domain."""
-    out = invert_basic_saturation(rgb, m)
+    out = rgb if in_working_space else cs.to_working(rgb, m.working_space)
+    out = invert_basic_saturation(out, m)
     out = invert_grading(out, m)
-    return invert_hsl(out, m)
+    out = invert_hsl(out, m)
+    return out if in_working_space else cs.from_working(out, m.working_space)
