@@ -51,6 +51,23 @@ def band_weights(hue_deg: np.ndarray, falloff: str = "smooth") -> np.ndarray:
 # Stages
 # --------------------------------------------------------------------------
 
+def apply_exposure(rgb: np.ndarray, ev: float) -> np.ndarray:
+    """A gain in linear light, used to level the exposure differences between
+    sample pairs before they are pooled.
+
+    Note this is deliberately *not* exposed as a preset parameter.  Measured
+    against ground truth, pulling the pair's whole brightness difference into
+    an Exposure slider makes things worse (ΔE 0.45 -> 11.2 when transferring
+    to another photograph): the measurable difference contains the preset's
+    own brightening as well as the photographer's, and one pair cannot
+    separate them.  Only the part that *differs between pairs* is provably
+    not the preset, and that is what gets levelled here.
+    """
+    if abs(ev) < 1e-9:
+        return rgb
+    return np.clip(cs.linear_to_srgb(cs.srgb_to_linear(rgb) * (2.0 ** ev)), 0.0, 1.0)
+
+
 def apply_curves(rgb: np.ndarray, m: PresetModel) -> np.ndarray:
     out = np.empty_like(rgb)
     for i, ch in enumerate((m.red, m.green, m.blue)):

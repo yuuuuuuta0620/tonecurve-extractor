@@ -17,21 +17,34 @@ from . import colorspace as cs
 from .model import BAND_NAMES, HSLBand, Calibration
 from .render import band_weights
 
+#: a hue band needs this share of the total sample weight before its sliders
+#: are trusted at all.  An absolute floor is useless: with 1.5 M samples a
+#: band holding 0.01 % of the data would still qualify, and the fit for it is
+#: then pure extrapolation -- which is exactly how a night scene ends up with
+#: "Purple luminance -100".
+MIN_BAND_FRACTION = 0.004
 MIN_BAND_WEIGHT = 150.0
+
+#: Mild Tikhonov shrinkage toward "no adjustment", scaled to the typical
+#: band's data.  Kept gentle on purpose: measured against known ground truth,
+#: heavier shrinkage costs real accuracy on well-sampled bands (slider error
+#: 1.44 -> 2.30 at 0.06).  Thin bands are handled by reporting their data
+#: share and warning, not by silently flattening them.
+BAND_SHRINK = 0.02
 
 
 def _irls(W: np.ndarray, y: np.ndarray, w: np.ndarray,
-          ridge: float = 1e-3, rounds: int = 4, huber: float = 1.5):
-    """Robust weighted least squares for  y ≈ W · beta."""
+          ridge: np.ndarray | float = 1e-3, rounds: int = 4, huber: float = 1.5):
+    """Robust weighted least squares for  y ≈ W · beta, with per-band ridge."""
     n_out = W.shape[1]
     rw = w.copy()
     beta = np.zeros(n_out)
+    reg = np.broadcast_to(np.asarray(ridge, dtype=np.float64), (n_out,))
     for r in range(rounds):
         sw = np.sqrt(rw)
         A = W * sw[:, None]
         b = y * sw
-        reg = ridge * np.sqrt(max(rw.sum(), 1.0))
-        A = np.vstack([A, reg * np.eye(n_out)])
+        A = np.vstack([A, np.diag(reg)])
         b = np.concatenate([b, np.zeros(n_out)])
         beta, *_ = np.linalg.lstsq(A, b, rcond=None)
         if r == rounds - 1:
@@ -66,32 +79,51 @@ def fit_hsl(mid: np.ndarray,
     k = -np.log2(np.clip(gamma, 1e-3, 1e3))
 
     band_mass = (W * weight[:, None]).sum(axis=0)
-    have = band_mass > MIN_BAND_WEIGHT
+    total = max(band_mass.sum(), 1e-12)
+    band_frac = band_mass / total
+    have = (band_mass > MIN_BAND_WEIGHT) & (band_frac > MIN_BAND_FRACTION)
+
+    def _ridge(mask, sample_w):
+        """Shrinkage strength for this sub-problem.
+
+        Each band's own diagonal in the normal equations is roughly its share
+        of ``sample_w``, so a single ridge value scaled to the *typical* band
+        leaves well-populated bands alone while pulling thin ones toward zero:
+        the shrink factor is m_i / (m_i + r^2).
+        """
+        m = (W[mask] ** 2 * sample_w[:, None]).sum(axis=0)
+        ref = float(np.median(m[m > 0])) if np.any(m > 0) else 1.0
+        return np.full(8, np.sqrt(BAND_SHRINK * ref))
 
     hue_b = np.zeros(8); sat_b = np.zeros(8); lum_b = np.zeros(8)
     if fit_hue:
         m = hue_ok
-        hue_b = _irls(W[m], dh[m], weight[m] * s1[m]) / cal.hue_degrees_per_100 * 100.0
+        sw = weight[m] * s1[m]
+        hue_b = _irls(W[m], dh[m], sw, ridge=_ridge(m, sw)) \
+            / cal.hue_degrees_per_100 * 100.0
     if fit_sat:
         m = sat_ok
-        sat_b = _irls(W[m], ratio[m], weight[m] * s1[m]) / cal.sat_gain * 100.0
+        sw = weight[m] * s1[m]
+        sat_b = _irls(W[m], ratio[m], sw, ridge=_ridge(m, sw)) / cal.sat_gain * 100.0
     if fit_lum:
         m = lum_ok
-        lum_b = _irls(W[m], k[m], weight[m] * np.clip(s1[m], 0.05, 1.0)) \
+        sw = weight[m] * np.clip(s1[m], 0.05, 1.0)
+        lum_b = _irls(W[m], k[m], sw, ridge=_ridge(m, sw)) \
             / cal.lum_gamma_stops * 100.0
 
     bands, diag = {}, {}
     for i, name in enumerate(BAND_NAMES):
+        clipped = [n for n, v in (("hue", hue_b[i]), ("sat", sat_b[i]), ("lum", lum_b[i]))
+                   if abs(v) > 100]
         if have[i]:
             bands[name] = HSLBand(hue=float(np.clip(hue_b[i], -100, 100)),
                                   sat=float(np.clip(sat_b[i], -100, 100)),
                                   lum=float(np.clip(lum_b[i], -100, 100)))
         else:
             bands[name] = HSLBand()
-        diag[name] = {"mass": round(float(band_mass[i]), 1),
+        diag[name] = {"data_share": round(float(band_frac[i]), 4),
                       "used": bool(have[i]),
-                      "clipped": bool(abs(hue_b[i]) > 100 or abs(sat_b[i]) > 100
-                                      or abs(lum_b[i]) > 100)}
+                      "clipped": clipped}
     return bands, diag
 
 

@@ -66,6 +66,7 @@ class PresetModel:
     saturation: float = 0.0   # Basic panel Saturation (only in --saturation-mode basic)
     vibrance: float = 0.0     # Basic panel Vibrance
 
+
     #: colour space the whole edit is applied in.  "melissa" = ProPhoto
     #: primaries with the sRGB tone response, which is what Lightroom's
     #: Develop module is understood to use; "srgb" applies everything in

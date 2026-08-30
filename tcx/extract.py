@@ -15,7 +15,7 @@ from .grading import fit_grading
 from .hsl import fit_hsl, fit_basic_saturation
 from .robust import weighted_median
 from .model import PresetModel, Calibration, BAND_NAMES, GradeZone
-from .render import render, invert_post
+from .render import render, invert_post, apply_exposure
 
 
 @dataclass
@@ -51,6 +51,13 @@ class ExtractOptions:
     frozen_rel: float = 0.06          # ...or this fraction of the frame's median move
     frozen_max_fraction: float = 0.30 # refuse to act if this much looks frozen
     working_space: str = "auto"       # "auto" | "melissa" | "srgb"
+
+    # With two or more pairs, each published sample carries the exposure the
+    # photographer chose for *that* frame on top of the preset.  The common
+    # part is the preset and cannot be separated from one pair alone, but the
+    # part that differs between pairs is provably not the preset -- so it is
+    # levelled out before the pairs are pooled, instead of letting them fight.
+    normalize_pair_exposure: bool = True
     name: str = "Extracted Preset"
     group: str = "tcx"
     calibration: Calibration = field(default_factory=Calibration)
@@ -72,6 +79,28 @@ def get_channel_transfers(model: PresetModel) -> list[np.ndarray]:
     return [C.compose_lut(ch, model.master) for ch in (model.red, model.green, model.blue)]
 
 
+def pair_exposure_ev(p: PairData) -> float:
+    """Robust overall brightness difference of one pair, in stops."""
+    yb = cs.relative_luminance(p.before_s)
+    ya = cs.relative_luminance(p.after_s)
+    m = (yb > 0.002) & (ya > 0.002) & (p.weight > 0)
+    if m.sum() < 100:
+        return 0.0
+    return float(weighted_median(np.log2(ya[m] / yb[m]), p.weight[m]))
+
+
+def level_pair_exposures(pairs: list[PairData]) -> dict:
+    """Remove the between-pair exposure spread, keeping the common part."""
+    evs = [pair_exposure_ev(p) for p in pairs]
+    ref = float(np.median(evs))
+    for p, ev in zip(pairs, evs):
+        d = ev - ref
+        p.fit_before = apply_exposure(p.before_s, d) if abs(d) > 0.02 else None
+    return {"per_pair_ev": [round(v, 3) for v in evs],
+            "reference_ev": round(ref, 3),
+            "spread_ev": round(float(max(evs) - min(evs)), 3)}
+
+
 def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, dict]:
     """Fit a preset in one concrete working space.  Use ``extract_auto`` to let
     the data choose the space."""
@@ -80,6 +109,15 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
                          f"{cs.WORKING_SPACES}, got {opts.working_space!r}; "
                          f"use extract_auto() for 'auto'")
     t0 = time.time()
+
+    if opts.normalize_pair_exposure and len(pairs) > 1:
+        lev = level_pair_exposures(pairs)
+    else:
+        for p in pairs:
+            p.fit_before = None
+        lev = ({"per_pair_ev": [round(pair_exposure_ev(pairs[0]), 3)], "spread_ev": 0.0}
+               if pairs else {})
+
     B, A, W = sample_pixels(pairs, opts.max_samples)
     diag: dict = {"n_pairs": len(pairs), "n_samples": int(B.shape[0]),
                   "options": {k: v for k, v in asdict(opts).items() if k != "calibration"},
@@ -88,6 +126,38 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     model = PresetModel(calibration=opts.calibration, name=opts.name, group=opts.group,
                         working_space=opts.working_space)
     W0 = W.copy()          # geometry-derived weights, never discarded
+
+    # How much of the difference is plain brightness?  Always measured, and
+    # moved into an Exposure slider only when asked.
+    yb, ya = cs.relative_luminance(B), cs.relative_luminance(A)
+    lit = (yb > 0.002) & (ya > 0.002)
+    implied_ev = float(weighted_median(np.log2(ya[lit] / yb[lit]), W[lit])) \
+        if lit.sum() > 100 else 0.0
+    diag["implied_exposure_ev"] = round(implied_ev, 3)
+    diag["pair_exposure"] = lev
+    if lev.get("spread_ev", 0) > 0.35:
+        diag["warnings"] = diag.get("warnings", []) + [
+            f"the sample pairs disagree on exposure by {lev['spread_ev']:.2f} EV "
+            f"({lev['per_pair_ev']}). That difference cannot be part of a preset — it is "
+            f"per-photo work the seller did on each frame. It has been levelled out "
+            f"before fitting, but whatever exposure they applied to *all* the samples "
+            f"is still inside the curve and will follow the preset onto your photos."]
+    if len(pairs) == 1:
+        diag["warnings"] = diag.get("warnings", []) + [
+            "fitted from a single pair: any exposure, white balance or local work the "
+            "seller did on that one frame is indistinguishable from the preset itself "
+            "and is baked into the curve. Measured on ground truth, samples free of "
+            "per-frame work transfer to an unrelated photo at ΔE 0.4, while samples "
+            "carrying it transfer at ΔE 2.4-6.8. Use several pairs from different "
+            "scenes."]
+    if abs(implied_ev) > 0.5:
+        diag["warnings"] = diag.get("warnings", []) + [
+            f"the pair differs by {implied_ev:+.2f} EV of overall brightness, all of it "
+            f"carried by the tone curve. Part of that is the preset and part is the "
+            f"exposure the seller chose for this frame, and one pair cannot tell them "
+            f"apart — so applied to your own raw files this curve will push them toward "
+            f"this sample's brightness. Several pairs from different scenes let the "
+            f"per-frame part be identified and removed."]
 
     # The whole edit is fitted in Lightroom's working space, so the curve we
     # write into the XMP is the curve Lightroom will actually apply.  The two
@@ -294,6 +364,22 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
                  "other space; large values mean the working space matters more "
                  "than the rest of the fit"),
     }
+
+    detail = diag.get("hsl_detail") or {}
+    thin = [n for n, v in detail.items()
+            if v.get("used") and v.get("data_share", 1) < 0.01
+            and any(abs(getattr(model.hsl[n], f)) > 15 for f in ("hue", "sat", "lum"))]
+    railed = [f"{n}.{c}" for n, v in detail.items() for c in v.get("clipped", [])]
+    if thin:
+        diag["warnings"] = diag.get("warnings", []) + [
+            f"colour-mixer bands {', '.join(thin)} were fitted from under 1% of the "
+            f"pixels — those sliders are barely measured here and may not suit other "
+            f"photographs. More image pairs, covering more colours, would settle them."]
+    if railed:
+        diag["warnings"] = diag.get("warnings", []) + [
+            f"these sliders hit the ±100 limit and were clipped: {', '.join(railed)}. "
+            f"A slider on the rail usually means the model is being asked to explain "
+            f"something it cannot express, not that the preset really is that extreme."]
 
     diag["diagnostics"] = basic.diagnose(model, B, A, W)
     diag["elapsed_sec"] = round(time.time() - t0, 2)

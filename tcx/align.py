@@ -22,6 +22,7 @@ class PairData:
     after_s: np.ndarray
     info: dict = field(default_factory=dict)
     outlier_mask: np.ndarray | None = None   # filled in by extract(), for reporting
+    fit_before: np.ndarray | None = None     # sampling override (exposure-normalised)
 
 
 def _gray(rgb: np.ndarray) -> np.ndarray:
@@ -147,7 +148,7 @@ def sample_pixels(pairs: list[PairData], max_samples: int = 1_500_000, seed: int
     B, A, W = [], [], []
     per = max(1, max_samples // max(1, len(pairs)))
     for p in pairs:
-        b = p.before_s.reshape(-1, 3)
+        b = (p.fit_before if p.fit_before is not None else p.before_s).reshape(-1, 3)
         a = p.after_s.reshape(-1, 3)
         w = p.weight.reshape(-1)
         keep = w > 1e-3

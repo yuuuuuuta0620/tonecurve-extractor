@@ -76,6 +76,7 @@ def cmd_extract(a) -> int:
         fit_hsl_lum=not a.no_hsl_lum, grading_global=a.grading_global,
         quantize=not a.no_quantize, working_space=a.working_space,
         detect_frozen=not a.no_frozen_detect, reject_sigma=a.reject_sigma,
+        normalize_pair_exposure=not a.no_normalize_pairs,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
@@ -145,7 +146,7 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
     print(f"  RMSE /255     {vm['rmse255']:>7}   unedited {bm['rmse255']:>7}")
     print(f"  PSNR dB       {vm['psnr_db']:>7}   unedited {bm['psnr_db']:>7}")
     print("\ndiagnostics")
-    print(f"  exposure      {d['exposure_ev']} EV")
+    print(f"  exposure      {d['exposure_ev']} EV (carried by the tone curve)")
     print(f"  curve         {d['curve_shape']} (mid slope {d['contrast_midslope']})")
     print(f"  black/white   {d['black_point_out']} / {d['white_point_out']}")
     print(f"  casts         shadows {d['cast_shadows']}  mid {d['cast_midtones']}"
@@ -162,6 +163,10 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
             if abs(z.sat) > 0.5 or abs(z.lum) > 0.5:
                 print(f"  {k:<10} hue {z.hue:>5.0f}°  sat {z.sat:>5.0f}  lum {z.lum:>5.0f}")
         print(f"  blending {model.grade_blending:.0f}  balance {model.grade_balance:.0f}")
+    pe = diag.get("pair_exposure") or {}
+    if pe.get("spread_ev", 0) > 0.05:
+        print(f"\nper-pair exposure: {pe['per_pair_ev']} EV "
+              f"(spread {pe['spread_ev']:.2f}) — levelled before fitting")
     fz = diag.get("frozen_pixels")
     if fz and fz.get("fraction", 0) > 0:
         print(f"\nburned-in / unmoved pixels: {fz['fraction']:.2%} "
@@ -243,6 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--blur", type=float, default=0.8, help="pre-sampling blur sigma")
     e.add_argument("--edge-percentile", type=float, default=60.0)
     e.add_argument("--no-align", action="store_true")
+    e.add_argument("--no-normalize-pairs", action="store_true",
+                   help="do not level the exposure differences between sample pairs")
     e.add_argument("--mask", help="mask image: white = measure, black = ignore "
                                   "(for watermarks, logos, borders)")
     e.add_argument("--exclude", action="append", metavar="L,T,W,H",

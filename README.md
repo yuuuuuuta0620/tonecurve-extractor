@@ -39,10 +39,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m tcx extract --before before.jpg --after after.jpg --name "Moody Film" -o out
 ```
 
-### 複数ペアをまとめて使う（精度が上がります）
+### 複数ペアをまとめて使う（**強く推奨**）
 
 サンプルが複数あるなら全部渡してください。1 枚の写真には写っていない色域・階調を
 他の写真が埋めるので、カーブの外挿区間が減りスライダーの推定も安定します。
+さらに重要なのは、**セラーが各カットに個別に当てた調整を分離できる**ことです
+（下の「なぜ自分の RAW に当てても同じにならないのか」を参照）。
 
 ```bash
 # 明示指定
@@ -177,6 +179,43 @@ JPEG サンプルでも実用的な精度で復元できます。誤差の主因
   そのため本ツールは**階調を全部トーンカーブに載せ**、露出やかぶりは
   「診断値」として表示するだけにしています。
 
+### なぜ Lightroom で自分の RAW に当てても同じルックにならないのか
+
+**抽出の精度の問題ではありません。** 既知の正解で検証すると、
+サンプルにその写真固有の調整が含まれていなければ、
+**まったく別の写真に適用しても ΔE 0.49** で一致します。手法自体は転写します。
+
+問題は**販売サンプル画像には、プリセット以外のものが混ざっている**ことです。
+セラーはたいてい各カットに露出・ホワイトバランス・部分補正を個別に当ててから書き出します。
+1 ペアしかないと、それが「プリセット」なのか「その 1 枚への調整」なのか**原理的に区別できません**。
+
+| サンプルの状態 | 別の写真に当てたときの ΔE |
+|---|---|
+| プリセットのみ（理想） | **0.49** |
+| フレームごとの露出込み・1〜8 ペア | 2.0 〜 6.8 |
+| 何もしない | 13.3 |
+
+トーンカーブは「入力レベル → 出力レベル」の写像です。夜景のサンプルから抽出したカーブは、
+**その写真のヒストグラムの位置に合わせて**暗部を持ち上げ中間調を寝かせています。
+適正露出の写真に当てれば、当然まったく違う見え方になります。
+
+**対策は複数ペアを使うことです。** ペアごとに違う調整は「プリセットではない」と証明できるので、
+tcx はペア間の露出差を自動で均してからフィットします（`--no-normalize-pairs` で無効化）。
+実測で 8 ペア時に ΔE 3.46 → 2.01 まで改善しました。1 ペアだけのときは警告が出ます。
+
+```
+! fitted from a single pair: any exposure, white balance or local work the seller
+  did on that one frame is indistinguishable from the preset itself
+! the pair differs by +2.27 EV of overall brightness, all of it carried by the curve
+! colour-mixer bands Purple, Green were fitted from under 1% of the pixels
+! these sliders hit the ±100 limit and were clipped: Purple.lum
+```
+
+**試して駄目だったこと**（記録として）：全体の明るさ差を Basic パネルの露光量スライダーに
+逃がす `--emit-exposure` を実装しましたが、**全条件で悪化した**ため削除しました
+（別写真への転写 ΔE 0.45 → 11.2）。測れる明るさ差には**プリセット自身の明るさも含まれる**ので、
+丸ごと外すとルックが壊れます。1 ペアからは分離できません。
+
 ### ウォーターマーク — 除去ではなく除外する
 
 販売サンプルにはたいてい透かしが焼き込まれています。透かしは **before/after の両方に同じように**
@@ -274,6 +313,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 | `--mask FILE` | なし | 白=測る／黒=無視のマスク画像 |
 | `--exclude L,T,W,H` | なし | 画面比で矩形を除外（複数指定可） |
 | `--no-frozen-detect` | off | 焼き込み透かしの自動検出を切る |
+| `--no-normalize-pairs` | off | ペア間の露出差の均しを切る |
 | `--reject-sigma S` | 6.0 | プリセットで説明できない画素の棄却しきい値。0 で無効 |
 | `--iterations N` | 3 | 座標降下の反復回数。4〜5 で概ね収束 |
 | `--smooth F` | 2.0 | トーンカーブの平滑化強度。ノイズの多い素材では上げる |
@@ -291,7 +331,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 32 テスト、約 40 秒
+.venv/bin/python -m pytest tests -q          # 35 テスト、約 55 秒
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```

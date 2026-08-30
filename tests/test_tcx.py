@@ -21,7 +21,7 @@ from tcx.extract import (ExtractOptions, extract, extract_auto,
 from tcx.imageio_utils import discover_pairs, load_image, save_image, split_pair
 from tcx.lut3d import apply_lut3d, fit_lut3d, write_cube
 from tcx.model import BAND_NAMES, GradeZone, HSLBand, PresetModel
-from tcx.render import band_weights, grade_masks, invert_post, render
+from tcx.render import (apply_exposure, band_weights, grade_masks, invert_post, render)
 from tcx.xmp import build_xmp
 
 from examples.make_synthetic import (known_preset, stamp_watermark, synthetic_photo,
@@ -294,6 +294,52 @@ def test_manual_mask_and_exclude_zero_the_weights():
     p2 = align_pair(img, img, do_align=False, exclude=[(0.0, 0.8, 1.0, 0.2)])
     assert p2.weight[int(0.9 * 200):].max() == 0
     assert p2.info["excluded_rects"] == 1
+
+
+def test_clean_samples_transfer_to_an_unseen_photograph():
+    """The whole point of a preset: fitted on the seller's frames, it has to
+    work on a photograph it has never seen.  With samples that carry only the
+    preset, it does."""
+    look = known_preset()
+    pairs = []
+    for i in range(2):
+        shot = synthetic_photo(400, 600, seed=200 + i)
+        pairs.append(align_pair(shot, render(shot, look), do_align=False, blur_sigma=0.0))
+    model, _ = extract(pairs, ExtractOptions(iterations=4,
+                                             working_space=look.working_space))
+
+    mine = synthetic_photo(400, 600, seed=999)
+    want = render(mine, look)
+    from tcx import metrics as Metrics
+    assert Metrics.compare(mine, want)["dE_mean"] > 8          # the look is substantial
+    assert Metrics.compare(render(mine, model), want)["dE_mean"] < 1.2
+
+
+def test_per_frame_exposure_is_levelled_and_reported():
+    """Samples that disagree on exposure prove per-photo work is present."""
+    look = known_preset()
+    pairs = []
+    for i, ev in enumerate((-0.7, 0.0, 0.7)):
+        shot = synthetic_photo(360, 540, seed=300 + i)
+        pairs.append(align_pair(shot, render(apply_exposure(shot, ev), look),
+                                do_align=False, blur_sigma=0.0))
+    _, diag = extract(pairs, ExtractOptions(iterations=2,
+                                            working_space=look.working_space))
+    pe = diag["pair_exposure"]
+    # the measured spread is compressed by the look's own tone curve, so it
+    # under-reads the 1.4 EV that was applied -- it only has to be detected
+    assert pe["spread_ev"] > 0.5, pe
+    assert any("disagree on exposure" in w for w in diag.get("warnings", []))
+    assert sum(p.fit_before is not None for p in pairs) >= 2
+
+
+def test_single_pair_is_flagged_as_unseparable():
+    shot = synthetic_photo(300, 450, seed=5)
+    look = known_preset()
+    pair = align_pair(shot, render(shot, look), do_align=False, blur_sigma=0.0)
+    _, diag = extract([pair], ExtractOptions(iterations=2,
+                                             working_space=look.working_space))
+    assert any("single pair" in w for w in diag.get("warnings", []))
 
 
 def test_lut3d_beats_or_matches_preset(synthetic):
