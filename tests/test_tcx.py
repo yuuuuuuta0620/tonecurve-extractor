@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tcx import colorspace as cs
 from tcx import curves as C
 from tcx.align import align_pair, sample_pixels
-from tcx.extract import (ExtractOptions, extract, extract_auto,
-                         get_channel_transfers, set_channel_transfers)
+from tcx.extract import (ExtractOptions, explain_residual, extract, extract_auto,
+                         extract_levelled, get_channel_transfers, set_channel_transfers)
 from tcx.imageio_utils import (discover_pairs, load_image, match_names, save_image,
                                split_pair)
 from tcx.lut3d import apply_lut3d, fit_lut3d, write_cube
@@ -341,6 +341,63 @@ def test_single_pair_is_flagged_as_unseparable():
     _, diag = extract([pair], ExtractOptions(iterations=2,
                                              working_space=look.working_space))
     assert any("single pair" in w for w in diag.get("warnings", []))
+
+
+def _brushwork(img, seed):
+    """A local adjustment no global preset can express."""
+    import cv2
+    h, w = img.shape[:2]
+    r = np.random.default_rng(seed)
+    m = np.zeros((h, w), np.float32)
+    cv2.ellipse(m, (int(r.uniform(.3, .7) * w), int(r.uniform(.3, .7) * h)),
+                (int(.28 * w), int(.34 * h)), 0, 0, 360, 1, -1)
+    m = cv2.GaussianBlur(m, (0, 0), 0.06 * w)[..., None]
+    return np.clip(img * (1 - m) + np.clip(img * np.array([1.22, 1.12, 1.02]), 0, 1) * m, 0, 1)
+
+
+@pytest.mark.parametrize("per_frame,local,expect_disagree,expect_local", [
+    (True, False, True, False),     # only per-frame exposure/WB: droppable
+    (False, True, False, True),     # only brushwork: the real limit
+    (False, False, False, False),   # clean samples
+])
+def test_diagnostic_separates_disagreement_from_local_work(
+        per_frame, local, expect_disagree, expect_local):
+    look = known_preset()
+    rng = np.random.default_rng(3)
+    pairs = []
+    for i in range(4):
+        shot = synthetic_photo(240, 360, seed=700 + i)
+        x = shot
+        if per_frame:
+            x = apply_exposure(shot, float(rng.normal(0, 0.5)))
+            x = np.clip(x * (1 + rng.normal(0, 0.03, 3)), 0, 1)
+        out = render(x, look)
+        if local:
+            out = _brushwork(out, 900 + i)
+        pairs.append(align_pair(shot, out, do_align=False, blur_sigma=0.0))
+
+    opts = ExtractOptions(iterations=2, working_space=look.working_space)
+    _, diag = extract_levelled(pairs, opts, look.working_space)
+    ex = explain_residual(pairs, opts, diag, look.working_space)
+    assert ex["pairs_disagree"] is expect_disagree, ex
+    assert ex["local_work_suspected"] is expect_local, ex
+
+
+def test_releveling_never_makes_the_fit_worse():
+    look = known_preset()
+    rng = np.random.default_rng(11)
+    pairs = []
+    for i in range(3):
+        shot = synthetic_photo(240, 360, seed=800 + i)
+        pairs.append(align_pair(shot, render(apply_exposure(shot, float(rng.normal(0, .5))), look),
+                                do_align=False, blur_sigma=0.0))
+    opts = ExtractOptions(iterations=2, working_space=look.working_space)
+    plain, d0 = extract(pairs, opts)
+    for p in pairs:
+        p.fit_before = None
+    _, d1 = extract_levelled(pairs, opts, look.working_space)
+    assert d1["verification_mean"]["dE_mean"] <= d0["verification_mean"]["dE_mean"] + 1e-6
+    assert "releveling" in d1
 
 
 def test_lut3d_beats_or_matches_preset(synthetic):

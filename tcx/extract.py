@@ -58,6 +58,10 @@ class ExtractOptions:
     # part that differs between pairs is provably not the preset -- so it is
     # levelled out before the pairs are pooled, instead of letting them fight.
     normalize_pair_exposure: bool = True
+    normalize_pair_white_balance: bool = True
+    #: set when the caller has already prepared PairData.fit_before and does
+    #: not want extract() to recompute it from the raw before/after ratios
+    pair_inputs_prepared: bool = False
     name: str = "Extracted Preset"
     group: str = "tcx"
     calibration: Calibration = field(default_factory=Calibration)
@@ -79,26 +83,60 @@ def get_channel_transfers(model: PresetModel) -> list[np.ndarray]:
     return [C.compose_lut(ch, model.master) for ch in (model.red, model.green, model.blue)]
 
 
+def pair_channel_gains(p: PairData) -> np.ndarray:
+    """Per-channel linear-light gain of one pair: exposure and white balance
+    rolled into three numbers."""
+    lb = cs.srgb_to_linear(p.before_s)
+    la = cs.srgb_to_linear(p.after_s)
+    g = np.ones(3)
+    for c in range(3):
+        m = (lb[..., c] > 0.002) & (la[..., c] > 0.002) & (p.weight > 0)
+        if m.sum() > 100:
+            g[c] = 2.0 ** weighted_median(
+                np.log2(la[..., c][m] / lb[..., c][m]), p.weight[m])
+    return g
+
+
 def pair_exposure_ev(p: PairData) -> float:
     """Robust overall brightness difference of one pair, in stops."""
-    yb = cs.relative_luminance(p.before_s)
-    ya = cs.relative_luminance(p.after_s)
-    m = (yb > 0.002) & (ya > 0.002) & (p.weight > 0)
-    if m.sum() < 100:
-        return 0.0
-    return float(weighted_median(np.log2(ya[m] / yb[m]), p.weight[m]))
+    return float(np.log2(np.exp(np.mean(np.log(pair_channel_gains(p))))))
 
 
-def level_pair_exposures(pairs: list[PairData]) -> dict:
-    """Remove the between-pair exposure spread, keeping the common part."""
-    evs = [pair_exposure_ev(p) for p in pairs]
-    ref = float(np.median(evs))
-    for p, ev in zip(pairs, evs):
-        d = ev - ref
-        p.fit_before = apply_exposure(p.before_s, d) if abs(d) > 0.02 else None
-    return {"per_pair_ev": [round(v, 3) for v in evs],
-            "reference_ev": round(ref, 3),
-            "spread_ev": round(float(max(evs) - min(evs)), 3)}
+def level_pair_gains(pairs: list[PairData], white_balance: bool = True) -> dict:
+    """Remove the between-pair exposure and white-balance spread.
+
+    Sellers set exposure *and* white balance per frame.  Whatever is common to
+    every sample might be the preset and is left alone; whatever differs
+    between them provably is not, so it is levelled before the pairs are
+    pooled -- otherwise they pull the shared curve in different directions and
+    the fit is worse than any single pair would have been.
+    """
+    G = np.array([pair_channel_gains(p) for p in pairs])
+    ref = np.median(G, axis=0)
+    evs = np.log2(np.exp(np.log(G).mean(axis=1)))
+
+    if not white_balance:                      # exposure only: keep the tint
+        scale = np.exp(np.log(G).mean(axis=1))[:, None] / np.exp(np.log(ref).mean())
+        adj = np.repeat(scale, 3, axis=1)
+    else:
+        adj = G / ref
+
+    for p, a in zip(pairs, adj):
+        if np.abs(np.log2(a)).max() > 0.02:
+            lin = cs.srgb_to_linear(p.before_s) * a
+            p.fit_before = np.clip(cs.linear_to_srgb(lin), 0.0, 1.0)
+        else:
+            p.fit_before = None
+
+    tint = G / np.exp(np.log(G).mean(axis=1))[:, None]     # gains with exposure divided out
+    return {"per_pair_ev": [round(float(v), 3) for v in evs],
+            "reference_ev": round(float(np.log2(np.exp(np.log(ref).mean()))), 3),
+            "spread_ev": round(float(evs.max() - evs.min()), 3),
+            "per_pair_tint_rb": [round(float(t[0] / t[2]), 4) for t in tint],
+            "spread_tint_pct": round(float(
+                100 * np.ptp(tint[:, 0] / tint[:, 2])
+                / np.median(tint[:, 0] / tint[:, 2])), 2),
+            "white_balance_levelled": bool(white_balance)}
 
 
 def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, dict]:
@@ -110,8 +148,10 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
                          f"use extract_auto() for 'auto'")
     t0 = time.time()
 
-    if opts.normalize_pair_exposure and len(pairs) > 1:
-        lev = level_pair_exposures(pairs)
+    if opts.pair_inputs_prepared:
+        lev = {}
+    elif opts.normalize_pair_exposure and len(pairs) > 1:
+        lev = level_pair_gains(pairs, white_balance=opts.normalize_pair_white_balance)
     else:
         for p in pairs:
             p.fit_before = None
@@ -134,7 +174,14 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     implied_ev = float(weighted_median(np.log2(ya[lit] / yb[lit]), W[lit])) \
         if lit.sum() > 100 else 0.0
     diag["implied_exposure_ev"] = round(implied_ev, 3)
-    diag["pair_exposure"] = lev
+    if lev:
+        diag["pair_exposure"] = lev
+    if lev.get("spread_tint_pct", 0) > 4:
+        diag["warnings"] = diag.get("warnings", []) + [
+            f"the sample pairs also disagree on white balance by "
+            f"{lev['spread_tint_pct']:.1f}% (red/blue ratio {lev['per_pair_tint_rb']}). "
+            f"Like the exposure spread, that is per-photo work; it has been levelled "
+            f"out before fitting."]
     if lev.get("spread_ev", 0) > 0.35:
         diag["warnings"] = diag.get("warnings", []) + [
             f"the sample pairs disagree on exposure by {lev['spread_ev']:.2f} EV "
@@ -397,6 +444,62 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     return model, diag
 
 
+def residual_pair_gains(pairs: list[PairData], model: PresetModel) -> np.ndarray:
+    """Per-pair, per-channel gain still left over after the fitted preset.
+
+    Measuring the raw before/after ratio confounds the photographer's exposure
+    with the preset's own brightening, and because the preset is a curve
+    rather than a gain, that confound varies with each frame's histogram --
+    so levelling on it injects differences of its own.  Measured against the
+    rendered prediction instead, the preset cancels and what remains is the
+    per-frame offset we actually want to remove.
+    """
+    G = np.ones((len(pairs), 3))
+    for i, p in enumerate(pairs):
+        src = p.fit_before if p.fit_before is not None else p.before_s
+        pred = cs.srgb_to_linear(render(src, model))
+        tgt = cs.srgb_to_linear(p.after_s)
+        for c in range(3):
+            m = (pred[..., c] > 0.004) & (tgt[..., c] > 0.004) & (p.weight > 0)
+            if m.sum() > 100:
+                G[i, c] = 2.0 ** weighted_median(
+                    np.log2(tgt[..., c][m] / pred[..., c][m]), p.weight[m])
+    return G
+
+
+def relevel_pairs(pairs: list[PairData], model: PresetModel) -> dict:
+    """Fold the leftover per-pair offsets into the sampling inputs."""
+    G = residual_pair_gains(pairs, model)
+    adj = G / np.median(G, axis=0)
+    for p, a in zip(pairs, adj):
+        base = p.fit_before if p.fit_before is not None else p.before_s
+        if np.abs(np.log2(a)).max() > 0.01:
+            p.fit_before = np.clip(
+                cs.linear_to_srgb(cs.srgb_to_linear(base) * a), 0.0, 1.0)
+    evs = np.log2(np.exp(np.log(G).mean(axis=1)))
+    return {"residual_ev_per_pair": [round(float(v), 3) for v in evs],
+            "residual_spread_ev": round(float(np.ptp(evs)), 3)}
+
+
+def extract_levelled(pairs: list[PairData], opts: ExtractOptions,
+                     space: str) -> tuple[PresetModel, dict]:
+    """Fit, measure what each pair still disagrees about, level it, fit again."""
+    o = replace(opts, working_space=space)
+    model, diag = extract(pairs, o)
+    if len(pairs) < 2 or not opts.normalize_pair_exposure:
+        return model, diag
+    prepared = [p.fit_before for p in pairs]
+    info = relevel_pairs(pairs, model)
+    model2, diag2 = extract(pairs, replace(o, pair_inputs_prepared=True))
+    if diag2["verification_mean"]["dE_mean"] <= diag["verification_mean"]["dE_mean"]:
+        diag2["releveling"] = info | {"kept": True}
+        return model2, diag2
+    for p, prev in zip(pairs, prepared):   # levelling made it worse: undo
+        p.fit_before = prev
+    diag["releveling"] = info | {"kept": False}
+    return model, diag
+
+
 def extract_auto(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, dict]:
     """Fit in every candidate working space and keep the one that explains the
     pair best.
@@ -408,12 +511,11 @@ def extract_auto(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetMod
     the residual tells us which one the editor used -- no guessing required.
     """
     if opts.working_space != "auto":
-        return extract(pairs, opts)
+        return extract_levelled(pairs, opts, opts.working_space)
 
     results = []
     for space in cs.WORKING_SPACES:
-        o = replace(opts, working_space=space)
-        model, diag = extract(pairs, o)
+        model, diag = extract_levelled(pairs, opts, space)
         results.append((diag["verification_mean"]["dE_mean"], space, model, diag))
 
     results.sort(key=lambda r: r[0])
@@ -426,3 +528,62 @@ def extract_auto(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetMod
                  "means the images cannot distinguish the two"),
     }
     return model, diag
+
+
+def explain_residual(pairs: list[PairData], opts: ExtractOptions,
+                     joint_diag: dict, space: str) -> dict:
+    """Say whether a disappointing fit is a limit or a fixable problem.
+
+    Fit each pair on its own and compare with the joint fit.  A pair a global
+    preset *can* explain fits well alone; if it also fits well jointly, it
+    agrees with the others.  The two failure modes look completely different:
+
+      solo good, joint bad -> the samples disagree.  Different per-frame work,
+        a different preset variant, or one odd sample.  Droppable.
+      solo bad too         -> no global preset explains that frame at all:
+        brushes, masks, subject/sky selections.  That is the real limit.
+    """
+    solo = []
+    o = replace(opts, iterations=min(2, opts.iterations), working_space=space,
+                normalize_pair_exposure=False)
+    for p in pairs:
+        keep = p.fit_before
+        p.fit_before = None
+        try:
+            _, d = extract([p], o)
+            solo.append(d["verification"][0]["preset"]["dE_mean"])
+        finally:
+            p.fit_before = keep
+
+    joint = [v["preset"]["dE_mean"] for v in joint_diag["verification"]]
+    solo_med = float(np.median(solo))
+    joint_med = float(np.median(joint))
+    gap = joint_med - solo_med
+
+    local = solo_med > 3.0        # no global preset explains even one frame alone
+    disagree = gap > 1.5          # each is explainable, but not by the *same* preset
+    if local and disagree:
+        verdict = ("both problems: the frames carry local work no preset can reproduce, "
+                   "and they also disagree with each other. Fix the disagreement first "
+                   "— drop the worst pairs — then judge what is left.")
+    elif local:
+        verdict = ("the samples carry local work (brushes, subject or sky masks, "
+                   "retouching) that no global preset can reproduce. Each frame resists "
+                   "a preset even on its own, so more pairs will not help. This is the "
+                   "real limit for these samples.")
+    elif disagree:
+        verdict = ("each frame fits well alone but they disagree with each other — they "
+                   "were not all produced by the same global edit. Drop the worst pairs "
+                   "and re-run; the preset is recoverable from the ones that agree.")
+    else:
+        verdict = ("the pairs agree and each is well explained; this fit is about as "
+                   "good as these samples allow.")
+
+    return {"local_work_suspected": bool(local),
+            "pairs_disagree": bool(disagree),
+            "solo_dE_per_pair": [round(v, 3) for v in solo],
+            "joint_dE_per_pair": [round(v, 3) for v in joint],
+            "solo_median": round(solo_med, 3),
+            "joint_median": round(joint_med, 3),
+            "disagreement": round(gap, 3),
+            "verdict": verdict}

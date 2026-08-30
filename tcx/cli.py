@@ -11,7 +11,7 @@ import numpy as np
 from . import __version__
 from . import curves as C
 from .align import align_pair
-from .extract import ExtractOptions, extract_auto
+from .extract import ExtractOptions, explain_residual, extract_auto
 from .imageio_utils import (load_image, save_image, split_pair, discover_pairs, fetch_url)
 from .lut3d import fit_lut3d, write_cube, apply_lut3d
 from .model import PresetModel, Calibration
@@ -77,9 +77,13 @@ def cmd_extract(a) -> int:
         quantize=not a.no_quantize, working_space=a.working_space,
         detect_frozen=not a.no_frozen_detect, reject_sigma=a.reject_sigma,
         normalize_pair_exposure=not a.no_normalize_pairs,
+        normalize_pair_white_balance=not a.no_normalize_wb,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
+    if a.diagnose and len(pairs) > 1:
+        diag["residual_explained"] = explain_residual(
+            pairs, opts, diag, model.working_space)
 
     os.makedirs(a.outdir, exist_ok=True)
     stem = a.stem or "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in a.name)
@@ -175,6 +179,13 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
             flag = "  <- far worse than the rest; check this pair" if des[i] > cut else ""
             print(f"  {i + 1:>2}  ΔE {des[i]:>6.2f}   exposure {ev} EV{flag}")
 
+    re_ = diag.get("residual_explained")
+    if re_:
+        print("\nwhy the residual is what it is")
+        print(f"  each pair fitted alone : ΔE {re_['solo_dE_per_pair']}")
+        print(f"  the same pairs jointly : ΔE {re_['joint_dE_per_pair']}")
+        print(f"  → {re_['verdict']}")
+
     pe = diag.get("pair_exposure") or {}
     if pe.get("spread_ev", 0) > 0.05:
         print(f"\nper-pair exposure: {pe['per_pair_ev']} EV "
@@ -262,6 +273,11 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--no-align", action="store_true")
     e.add_argument("--no-normalize-pairs", action="store_true",
                    help="do not level the exposure differences between sample pairs")
+    e.add_argument("--no-normalize-wb", action="store_true",
+                   help="level exposure between pairs but leave their white balance alone")
+    e.add_argument("--diagnose", action="store_true",
+                   help="also fit each pair alone, to say whether a poor fit is a real "
+                        "limit (local work in the samples) or the pairs disagreeing")
     e.add_argument("--mask", help="mask image: white = measure, black = ignore "
                                   "(for watermarks, logos, borders)")
     e.add_argument("--exclude", action="append", metavar="L,T,W,H",

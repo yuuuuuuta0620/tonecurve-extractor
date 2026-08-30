@@ -12,7 +12,7 @@ import numpy as np
 from flask import Flask, Response, abort, render_template_string, request, send_file
 
 from .align import align_pair, sample_pixels
-from .extract import ExtractOptions, extract_auto
+from .extract import ExtractOptions, explain_residual, extract_auto
 from .imageio_utils import load_image, match_names, split_pair
 from .model import Calibration
 from .report import make_figure
@@ -83,6 +83,8 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
    <div><label>カーブ平滑化</label><input type="number" name="smooth" value="2.0" step="0.1" min="0" style="width:82px"></div>
    <div><label>3D LUT</label><select name="cube"><option value="">出力しない</option>
      <option value="1">.cube も出力</option></select></div>
+   <div><label>診断</label><select name="diagnose"><option value="">しない</option>
+     <option value="1">各ペア単独でも試して原因を切り分ける（遅くなります）</option></select></div>
   </div>
  </fieldset>
  <button type="submit">プリセットを抽出</button>
@@ -98,6 +100,13 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
    <td>{{ p.de }}{% if p.suspect %} ⚠{% endif %}</td><td>{{ p.ev }}</td><td>{{ p.ncc }}</td>
   </tr>{% endfor %}
  </table>
+ {% if result.explain %}
+ <div class="err" style="border-color:#888;background:rgba(127,127,127,.08)">
+  <b>誤差の内訳</b><br>
+  各ペアを単独でフィット：ΔE {{ result.explain.solo_dE_per_pair }}<br>
+  同じペアを合同でフィット：ΔE {{ result.explain.joint_dE_per_pair }}<br>
+  → {{ result.explain.verdict }}
+ </div>{% endif %}
  {% if result.suspect %}<div class="err">⚠ 他のペアに比べて誤差が突出しているペアがあります。
   Before / After の対応が間違っている、別のプリセットが当たっている、あるいはそのカットだけ
   部分補正が強い可能性があります。除外して再実行すると改善するかもしれません。</div>{% endif %}
@@ -176,6 +185,9 @@ def create_app(workdir: str | None = None) -> Flask:
                 smooth=float(request.form.get("smooth", 2.0)),
                 name=request.form.get("name") or "Extracted Preset")
             model, diag = extract_auto(aligned, opts)
+            if request.form.get("diagnose") and len(aligned) > 1:
+                diag["residual_explained"] = explain_residual(
+                    aligned, opts, diag, model.working_space)
 
             xmp = build_xmp(model)
             open(os.path.join(d, "preset.xmp"), "w", encoding="utf-8").write(xmp)
@@ -216,6 +228,7 @@ def create_app(workdir: str | None = None) -> Flask:
                         "v": diag["verification_mean"], "b": diag["baseline_mean"],
                         "xmp": xmp, "has_cube": has_cube, "pairs": rows,
                         "suspect": suspect_any,
+                        "explain": diag.get("residual_explained"),
                         "warnings": diag.get("warnings", [])})
         except Exception as e:  # surfaced to the user rather than a 500 page
             return render_template_string(PAGE, result=None, error=f"{type(e).__name__}: {e}")

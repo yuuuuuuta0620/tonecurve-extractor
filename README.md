@@ -267,6 +267,38 @@ tcx はペア間の露出差を自動で均してからフィットします（`
 （別写真への転写 ΔE 0.45 → 11.2）。測れる明るさ差には**プリセット自身の明るさも含まれる**ので、
 丸ごと外すとルックが壊れます。1 ペアからは分離できません。
 
+### 結果が悪いとき：限界なのか、直せるのか
+
+ΔE が下がりきらないとき、原因は 2 つあり、**対処法が正反対**です。
+
+- **ペア同士が矛盾している** — 各カットは単独ならきれいに説明できるのに、
+  同じプリセットでは説明できない。フレームごとの調整、別バリエーションのプリセット、
+  混ざった 1 枚。→ **悪いペアを外せば直ります**
+- **各カットに局所補正が入っている** — ブラシ、被写体・空マスク、レタッチ。
+  単独でフィットしても誤差が残る。→ **ペアを増やしても直りません。これが本当の限界です**
+
+`--diagnose`（Web UI では「診断」を有効化）を付けると、各ペアを**単独でも**フィットして
+比較し、どちらかを判定します。
+
+```bash
+.venv/bin/python -m tcx extract --dir samples/ --diagnose -o out
+```
+
+```
+why the residual is what it is
+  each pair fitted alone : ΔE [1.6, 1.7, 1.5, 1.8]
+  the same pairs jointly : ΔE [4.5, 4.4, 4.7, 4.6]
+  → each frame fits well alone but they disagree with each other — they were not all
+    produced by the same global edit. Drop the worst pairs and re-run.
+```
+
+正解が既知のデータで 4 パターン（フレームごとの調整のみ／局所補正のみ／両方／クリーン）を
+作って検証し、**4/4 正しく判定**しました。
+
+ペア間の露出とホワイトバランスのばらつきは自動で均されます。均しは
+**生の before/after 比ではなく、いったんフィットしたプリセットとの残差**で測ります
+（プリセット自身の効果が混入しないため）。効果が無ければ自動で取り消します。
+
 ### ウォーターマーク — 除去ではなく除外する
 
 販売サンプルにはたいてい透かしが焼き込まれています。透かしは **before/after の両方に同じように**
@@ -365,6 +397,8 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 | `--exclude L,T,W,H` | なし | 画面比で矩形を除外（複数指定可） |
 | `--no-frozen-detect` | off | 焼き込み透かしの自動検出を切る |
 | `--no-normalize-pairs` | off | ペア間の露出差の均しを切る |
+| `--no-normalize-wb` | off | 露出だけ均し、ホワイトバランスは触らない |
+| `--diagnose` | off | 各ペア単独でもフィットして、限界か改善可能かを判定 |
 | `--reject-sigma S` | 6.0 | プリセットで説明できない画素の棄却しきい値。0 で無効 |
 | `--iterations N` | 3 | 座標降下の反復回数。4〜5 で概ね収束 |
 | `--smooth F` | 2.0 | トーンカーブの平滑化強度。ノイズの多い素材では上げる |
@@ -382,7 +416,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 35 テスト、約 55 秒
+.venv/bin/python -m pytest tests -q          # 45 テスト、約 90 秒
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```
