@@ -587,10 +587,15 @@ def test_colour_chart_covers_only_colours_the_photographs_contain(tmp_path):
                                                  working_space=look.working_space))
     chart = diag["colour_chart"]
     assert chart["cells"], "no swatches found"
-    assert chart["columns"][0] == "neutral" and len(chart["columns"]) == 9
-    # rows with no data are dropped, so every row must carry at least one cell
+    # empty rows and columns are trimmed, so every one that survives must
+    # carry at least one swatch
     for ri in range(len(chart["rows"])):
-        assert any(r == ri for r, _ in chart["cells"])
+        assert any(r == ri for r, _ in chart["cells"]), ri
+    for ci in range(len(chart["columns"])):
+        assert any(c == ci for _, c in chart["cells"]), ci
+    # hue columns are labelled with the Colour Mixer band they fall in
+    assert all(col == "neutral" or col.split()[0] in {b[:3] for b in BAND_NAMES}
+               for col in chart["columns"]), chart["columns"]
 
     for c in chart["cells"].values():
         assert c["before"].shape == (3,) and c["after"].shape == (3,)
@@ -605,6 +610,49 @@ def test_colour_chart_covers_only_colours_the_photographs_contain(tmp_path):
     assert len(set(sizes.values())) == 1, sizes
     paths = write_charts(str(tmp_path / "x"), chart)
     assert len(paths) == 4 and all(os.path.exists(p) for p in paths)
+
+
+@pytest.mark.parametrize("hues,rows", [(8, 4), (16, 6), (24, 8)])
+def test_chart_density_is_parametrised(hues, rows):
+    from tcx.chart import build_chart
+    before = synthetic_photo(400, 600, seed=75)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=2, colour_guide=False,
+                                              colour_chart=False,
+                                              working_space=look.working_space))
+    B, A, W = sample_pixels([pair], 300_000)
+    chart = build_chart(B, A, W, model, n_hues=hues, n_rows=rows)
+    assert 1 <= len(chart["columns"]) <= hues + 1
+    assert 1 <= len(chart["rows"]) <= rows
+    # indices must stay inside the trimmed grid
+    for (ri, ci) in chart["cells"]:
+        assert 0 <= ri < len(chart["rows"]) and 0 <= ci < len(chart["columns"])
+
+
+def test_webapp_offers_the_charts_for_download(tmp_path):
+    """The charts are the deliverable for matching by eye in Lightroom, so the
+    web UI has to hand over the files, not just render them inline."""
+    import re
+    from tcx.webapp import create_app
+    look = known_preset()
+    shot = synthetic_photo(240, 360, seed=77)
+    save_image(str(tmp_path / "01_before.jpg"), shot)
+    save_image(str(tmp_path / "01_after.jpg"), render(shot, look))
+    client = create_app(str(tmp_path / "work")).test_client()
+    resp = client.post("/extract", content_type="multipart/form-data", data={
+        "before": (open(tmp_path / "01_before.jpg", "rb"), "01_before.jpg"),
+        "after": (open(tmp_path / "01_after.jpg", "rb"), "01_after.jpg"),
+        "name": "My Look", "color_mode": "tone", "iterations": "2", "smooth": "2.0"})
+    body = resp.data.decode()
+    token = re.search(r"/download/([0-9a-f]+)/preset\.xmp", body).group(1)
+    charts = re.findall(r"/download/[0-9a-f]+/([\w.-]+_chart_[a-z]+\.png)", body)
+    assert {c.split("_chart_")[1] for c in charts} == {
+        "before.png", "tone.png", "after.png", "compare.png"}
+    for name in charts:
+        assert not name.startswith("chart_chart")      # no doubled stem
+        got = client.get(f"/download/{token}/{name}")
+        assert got.status_code == 200 and len(got.data) > 1000
 
 
 def test_chart_swatches_match_what_the_preset_does():

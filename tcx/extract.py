@@ -66,6 +66,8 @@ class ExtractOptions:
     colour_guide: bool = True
     n_patches: int = 6                # crops of characteristic colour changes
     colour_chart: bool = True         # before/after swatch chart to match by eye
+    chart_hues: int = 16              # hue slices across the chart
+    chart_rows: int = 6               # lightness bands down the chart
     name: str = "Extracted Preset"
     group: str = "tcx"
     calibration: Calibration = field(default_factory=Calibration)
@@ -455,7 +457,9 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
 
     if opts.colour_chart:
         from .chart import build_chart
-        diag["colour_chart"] = build_chart(B, A, W0, model)
+        diag["colour_chart"] = build_chart(B, A, W0, model,
+                                           n_hues=opts.chart_hues,
+                                           n_rows=opts.chart_rows)
 
     if opts.colour_guide:
         from .guide import build_guide, characteristic_patches, describe_look

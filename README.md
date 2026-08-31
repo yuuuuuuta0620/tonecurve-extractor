@@ -347,6 +347,10 @@ HALD 画像のような一様な色立方体ではなく、**その写真に実�
 **タイルが一致するまで追い込めます**。ラベルや文字は before/tone/after には入れていません
 （現像すると文字まで色が変わってしまうため）。
 
+既定は **色相 16 分割 × 明度 6 段**（`--chart-hues` / `--chart-rows`）、タイルは 180 px です。
+データが無いマスは出力されないので、実際の枚数は写真の色域によります。
+CLI では `-o` の出力先に、Web UI では結果ページの**ダウンロードボタン**から取得できます。
+
 `chart_compare.png` には各タイルに実測値が入ります。
 
 ```
@@ -606,7 +610,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 57 テスト、約 330 秒
+.venv/bin/python -m pytest tests -q          # 61 テスト、約 10 分
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```

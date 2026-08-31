@@ -26,12 +26,30 @@ from .model import BAND_NAMES
 from .render import band_weights
 from .robust import weighted_median
 
-#: lightness rows, from the bottom of the range to the top
-ROWS = [("very dark", 0.06, 0.20), ("dark", 0.20, 0.36), ("mid", 0.36, 0.55),
-        ("light", 0.55, 0.74), ("very light", 0.74, 0.92)]
+#: lightness range the rows are spread over
+L_LO, L_HI = 0.05, 0.95
 
-MIN_TILE_WEIGHT = 60.0
+MIN_TILE_WEIGHT = 40.0
 NEUTRAL_SAT = 0.09
+
+DEFAULT_HUES = 16
+DEFAULT_ROWS = 6
+
+
+def _rows(n: int) -> list[tuple[str, float, float]]:
+    edges = np.linspace(L_LO, L_HI, n + 1)
+    return [(f"L {edges[i] * 100:.0f}-{edges[i + 1] * 100:.0f}",
+             float(edges[i]), float(edges[i + 1])) for i in range(n)]
+
+
+def _hue_columns(n: int) -> list[tuple[str, float]]:
+    """n hue slices, each labelled with the Colour Mixer band it falls in."""
+    centres = (np.arange(n) + 0.5) * 360.0 / n
+    out = []
+    for c in centres:
+        band = BAND_NAMES[int(np.argmax(band_weights(np.array(float(c)))))]
+        out.append((f"{band[:3]} {c:.0f}\u00b0", float(c)))
+    return out
 
 
 def _font(size: int):
@@ -46,7 +64,8 @@ def _font(size: int):
 
 
 def build_chart(before: np.ndarray, after: np.ndarray, weight: np.ndarray,
-                model=None) -> dict:
+                model=None, n_hues: int = DEFAULT_HUES,
+                n_rows: int = DEFAULT_ROWS) -> dict:
     """Median before / tone-corrected / after colour for each cell.
 
     The deltas are measured from the tone-corrected colour, because that is
@@ -58,18 +77,24 @@ def build_chart(before: np.ndarray, after: np.ndarray, weight: np.ndarray,
         from .guide import _tone_only
         tone = _tone_only(before, model)
     h1, s1, l1 = cs.rgb_to_hsl(before)
-    W = band_weights(h1)
     coloured = s1 >= NEUTRAL_SAT
 
-    columns = ["neutral"] + BAND_NAMES
+    hues = _hue_columns(n_hues)
+    rows = _rows(n_rows)
+    columns = ["neutral"] + [name for name, _ in hues]
+    # hard hue bins: for a chart, a clean median per slice beats a smooth
+    # partition, which would blend neighbouring hues into every swatch
+    width = 360.0 / n_hues
+    slot = np.floor((h1 % 360.0) / width).astype(int) % n_hues
+
     cells: dict[tuple[int, int], dict] = {}
-    for ri, (_, lo, hi) in enumerate(ROWS):
+    for ri, (_, lo, hi) in enumerate(rows):
         band_row = (l1 >= lo) & (l1 < hi) & (weight > 0)
         for ci, name in enumerate(columns):
-            if name == "neutral":
+            if ci == 0:
                 w = weight * band_row * ~coloured
             else:
-                w = weight * band_row * coloured * W[:, ci - 1]
+                w = weight * band_row * coloured * (slot == ci - 1)
             if w.sum() < MIN_TILE_WEIGHT:
                 continue
             src = np.array([weighted_median(before[:, c], w) for c in range(3)])
@@ -86,10 +111,13 @@ def build_chart(before: np.ndarray, after: np.ndarray, weight: np.ndarray,
                 "lum": 100.0 * (float(la) / max(float(lb), 1e-6) - 1.0),
             }
 
-    used_rows = sorted({ri for ri, _ in cells})       # drop rows with no data
-    remap = {old: new for new, old in enumerate(used_rows)}
-    cells = {(remap[ri], ci): c for (ri, ci), c in cells.items()}
-    return {"columns": columns, "rows": [ROWS[i][0] for i in used_rows], "cells": cells}
+    used_rows = sorted({ri for ri, _ in cells})        # drop empty rows
+    used_cols = sorted({ci for _, ci in cells})        # ...and empty columns
+    rmap = {o: n for n, o in enumerate(used_rows)}
+    cmap = {o: n for n, o in enumerate(used_cols)}
+    cells = {(rmap[ri], cmap[ci]): c for (ri, ci), c in cells.items()}
+    return {"columns": [columns[i] for i in used_cols],
+            "rows": [rows[i][0] for i in used_rows], "cells": cells}
 
 
 def _paint(draw, box, rgb):
@@ -162,7 +190,8 @@ def render_chart(chart: dict, which: str = "before", tile: int = 84,
     return img
 
 
-def write_charts(stem: str, chart: dict) -> list[str]:
+def write_charts(stem: str, chart: dict, tile: int = 180) -> list[str]:
+    """Large plain swatches for Lightroom, plus the annotated comparison."""
     out = []
     for which, suffix in (("before", "_chart_before.png"),
                           ("tone", "_chart_tone.png"),
@@ -170,7 +199,8 @@ def write_charts(stem: str, chart: dict) -> list[str]:
                           ("compare", "_chart_compare.png")):
         # the two plain charts carry no labels: they are meant to be pushed
         # through Lightroom, and text would be graded along with the swatches
-        img = render_chart(chart, which, labels=(which == "compare"))
+        img = render_chart(chart, which, tile=tile,
+                           labels=(which == "compare"))
         path = stem + suffix
         img.save(path)
         out.append(path)

@@ -80,7 +80,8 @@ def cmd_extract(a) -> int:
         normalize_pair_exposure=not a.no_normalize_pairs,
         normalize_pair_white_balance=not a.no_normalize_wb,
         colour_guide=not a.no_guide, n_patches=a.patches,
-        colour_chart=not a.no_chart,
+        colour_chart=not a.no_chart, chart_hues=a.chart_hues,
+        chart_rows=a.chart_rows,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
@@ -114,7 +115,7 @@ def cmd_extract(a) -> int:
         write_html(html_path, model, diag, png, xmp)
         outputs += [png_path, html_path]
 
-    if diag.get("colour_chart") and not a.no_report:
+    if diag.get("colour_chart"):
         from .chart import write_charts
         outputs += write_charts(os.path.join(a.outdir, stem), diag["colour_chart"])
 
@@ -326,6 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="level exposure between pairs but leave their white balance alone")
     e.add_argument("--patches", type=int, default=6, metavar="N",
                    help="how many characteristic colour-change crops to show")
+    e.add_argument("--chart-hues", type=int, default=16,
+                   help="hue slices across the colour chart")
+    e.add_argument("--chart-rows", type=int, default=6,
+                   help="lightness bands down the colour chart")
     e.add_argument("--no-chart", action="store_true",
                    help="skip the before/after colour reference charts")
     e.add_argument("--no-guide", action="store_true",

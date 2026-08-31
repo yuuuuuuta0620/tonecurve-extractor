@@ -126,6 +126,12 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title
   {% if result.has_cube %}<a href="/download/{{ result.token }}/preset.cube">⬇ 3D LUT (.cube)</a>{% endif %}
   <a href="/download/{{ result.token }}/report.png">⬇ レポート画像</a>
  </div>
+ {% if result.charts %}
+ <div class="dl" style="margin-top:6px">
+  <span style="font-size:12.5px;color:var(--mut);display:block;margin-bottom:2px">
+   色見本チャート（before を Lightroom に読み込み、after と見比べます）</span>
+  {% for f in result.charts %}<a href="/download/{{ result.token }}/{{ f }}">⬇ {{ f }}</a>{% endfor %}
+ </div>{% endif %}
  {{ result.guide_html|safe }}
 <h3 style="font-size:15px;margin:26px 0 8px">.xmp の中身</h3>
  <pre>{{ result.xmp }}</pre>
@@ -197,6 +203,15 @@ def create_app(workdir: str | None = None) -> Flask:
             png = make_figure(model, diag, aligned)
             open(os.path.join(d, "report.png"), "wb").write(png)
 
+            chart_files = []
+            if diag.get("colour_chart"):
+                from .chart import write_charts
+                safe = "".join(ch if ch.isalnum() or ch in "-_" else "_"
+                               for ch in (opts.name or "preset"))[:40] or "preset"
+                chart_files = [os.path.basename(f)
+                               for f in write_charts(os.path.join(d, safe),
+                                                     diag["colour_chart"])]
+
             has_cube = False
             if request.form.get("cube"):
                 from .lut3d import fit_lut3d, write_cube
@@ -231,6 +246,7 @@ def create_app(workdir: str | None = None) -> Flask:
                         "xmp": xmp, "has_cube": has_cube, "pairs": rows,
                         "suspect": suspect_any,
                         "explain": diag.get("residual_explained"),
+                        "charts": chart_files,
                         "guide_html": (look_html(diag.get("look_description"))
                                        + chart_html(diag.get("colour_chart"))
                                        + patches_html(diag.get("patches") or [])
