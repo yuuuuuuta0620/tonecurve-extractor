@@ -390,18 +390,32 @@ def test_per_frame_exposure_is_levelled_and_reported():
     assert sum(p.fit_before is not None for p in pairs) >= 2
 
 
-def test_tone_mode_does_not_warn_about_a_single_pair():
-    """A master curve has too little freedom to overfit per-frame work, so the
-    single-pair alarm that applies to a colour fit does not apply here."""
+def test_tone_mode_warns_proportionately_about_a_single_pair():
+    """A master curve cannot overfit per-frame colour work, so the alarm that
+    applies to a colour fit does not apply -- but the curve itself still
+    sharpens with more pairs, and the note should say so without overstating."""
     shot = synthetic_photo(300, 450, seed=5)
     look = known_preset()
     pair = align_pair(shot, render(shot, look), do_align=False, blur_sigma=0.0)
     _, diag = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
-                                             colour_guide=False,
+                                             colour_guide=False, colour_chart=False,
                                              working_space=look.working_space))
     warnings = diag.get("warnings", [])
-    assert not any("single pair" in w for w in warnings), warnings
     assert not any("cannot tell them apart" in w for w in warnings), warnings
+    assert not any("indistinguishable from the preset" in w for w in warnings), warnings
+    assert any("will not break down, but it is not settled" in w for w in warnings), warnings
+
+
+def test_tone_mode_stops_warning_once_there_are_enough_pairs():
+    look = known_preset()
+    pairs = []
+    for i in range(4):
+        shot = synthetic_photo(240, 360, seed=90 + i)
+        pairs.append(align_pair(shot, render(shot, look), do_align=False, blur_sigma=0.0))
+    _, diag = extract(pairs, ExtractOptions(iterations=2, color_mode="tone",
+                                            colour_guide=False, colour_chart=False,
+                                            working_space=look.working_space))
+    assert not any("not settled" in w for w in diag.get("warnings", []))
 
 
 def test_single_pair_is_flagged_as_unseparable():

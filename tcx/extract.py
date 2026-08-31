@@ -210,6 +210,18 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
                 f"it the preset and part the exposure chosen for these frames. Set "
                 f"Exposure to taste on your own photographs; the shape of the curve is "
                 f"what transfers."]
+        if n <= 2:
+            # the *total* error barely moves with pair count in tone mode, because
+            # the colour it does not reproduce dominates it -- but the curve
+            # itself keeps improving.  Measured on unseen photographs, lightness
+            # error alone: 1 pair ΔL* 3.7 (spanning 10.8 across draws), 2 pairs
+            # 2.4, 6 pairs 1.7 (spanning 1.4).
+            diag["warnings"] = diag.get("warnings", []) + [
+                f"fitted from {n} pair{'s' if n > 1 else ''}: the curve will not break "
+                f"down, but it is not settled either. On unseen photographs its "
+                f"lightness error runs ΔL* 3.7 at one pair against 1.7 at six, and the "
+                f"colour guidance you would dial in by hand is about three times less "
+                f"stable. More pairs are still worth having in tone mode."]
     elif n <= 4:
         # measured on ground truth with realistic per-frame variation in the
         # samples (exposure sd 0.4 EV, white balance sd 2 %, q85 4:2:0 JPEG):
