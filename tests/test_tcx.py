@@ -20,7 +20,8 @@ from tcx.extract import (ExtractOptions, explain_residual, extract, extract_auto
                          extract_levelled, get_channel_transfers, set_channel_transfers)
 from tcx.imageio_utils import (discover_pairs, load_image, match_names, save_image,
                                split_pair)
-from tcx.lut3d import apply_lut3d, fit_lut3d, write_cube
+from tcx.lut3d import (apply_lut3d, bake_lut3d, fit_lut3d, separability_error,
+                       write_cube, write_cube_1d)
 from tcx.model import BAND_NAMES, GradeZone, HSLBand, PresetModel
 from tcx.render import (apply_exposure, band_weights, grade_masks, invert_post, render)
 from tcx.xmp import build_xmp
@@ -523,6 +524,58 @@ def test_lut3d_beats_or_matches_preset(synthetic):
     lut = fit_lut3d(B, A, W, model=model, size=17)
     got = M.compare(apply_lut3d(pair.before, lut), pair.after, pair.weight)
     assert got["dE_mean"] < 1.5
+
+
+def test_baked_cube_reproduces_the_preset_it_came_from():
+    """A 3D LUT samples the curve and interpolates linearly between nodes,
+    so lattice size decides whether that is invisible or not."""
+    before = synthetic_photo(300, 450, seed=61)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
+                                              colour_guide=False,
+                                              working_space=look.working_space))
+    test = synthetic_photo(240, 360, seed=63)
+    ref = render(test, model)
+    errs = {}
+    for n in (9, 33):
+        got = apply_lut3d(test, bake_lut3d(model, n))
+        errs[n] = float(cs.delta_e2000(cs.rgb_to_lab(got), cs.rgb_to_lab(ref)).mean())
+    assert errs[33] < 0.15                 # well under a just-noticeable difference
+    assert errs[9] > errs[33] * 3          # a coarse lattice really does cost
+
+
+@pytest.mark.parametrize("space,separable", [("srgb", True), ("melissa", False)])
+def test_separability_depends_on_the_working_space(space, separable):
+    """A master curve is three identical 1-D curves in sRGB, but applying it in
+    ProPhoto primaries mixes the channels, so a 1-D LUT is no longer valid."""
+    before = synthetic_photo(260, 390, seed=65)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
+                                              colour_guide=False, working_space=space))
+    err = separability_error(model)
+    assert (err < 0.05) is separable, (space, err)
+
+
+def test_1d_cube_is_exact_when_separable(tmp_path):
+    before = synthetic_photo(260, 390, seed=67)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
+                                              colour_guide=False, working_space="srgb"))
+    path = tmp_path / "t.cube"
+    write_cube_1d(str(path), model)
+    lines = [l for l in path.read_text().splitlines() if l[:1].isdigit()]
+    assert "LUT_1D_SIZE 1024" in path.read_text()
+    vals = np.array([[float(x) for x in l.split()] for l in lines])
+    assert len(vals) == 1024
+
+    g = np.linspace(0, 1, 1024)
+    test = synthetic_photo(200, 300, seed=69)
+    got = np.stack([np.interp(test[..., c], g, vals[:, c]) for c in range(3)], axis=-1)
+    err = float(cs.delta_e2000(cs.rgb_to_lab(got), cs.rgb_to_lab(render(test, model))).max())
+    assert err < 0.01, err
 
 
 def test_cube_file_is_parseable(tmp_path, synthetic):

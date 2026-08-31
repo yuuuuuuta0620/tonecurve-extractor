@@ -13,7 +13,8 @@ from . import curves as C
 from .align import align_pair
 from .extract import ExtractOptions, explain_residual, extract_auto
 from .imageio_utils import (load_image, save_image, split_pair, discover_pairs, fetch_url)
-from .lut3d import fit_lut3d, write_cube, apply_lut3d
+from .lut3d import (apply_lut3d, bake_lut3d, fit_lut3d, separability_error,
+                    write_cube, write_cube_1d)
 from .model import PresetModel, Calibration
 from .render import render
 from .report import make_figure, write_html
@@ -115,16 +116,31 @@ def cmd_extract(a) -> int:
         outputs.append(os.path.join(a.outdir, stem + "_rendered.jpg"))
 
     if a.cube:
-        from .align import sample_pixels
-        B, A, W = sample_pixels(pairs, min(a.max_samples, 600_000))
-        lut = fit_lut3d(B, A, W, model=model, size=a.cube_size)
         cube_path = os.path.join(a.outdir, stem + ".cube")
-        write_cube(cube_path, lut, title=a.name)
-        outputs.append(cube_path)
-        if a.verbose:
+        from_model = a.cube_source == "model" or (a.cube_source == "auto"
+                                                  and a.color_mode == "tone")
+        if from_model:
+            sep = separability_error(model)
+            diag["cube"] = {"source": "model", "separability_dE": round(sep, 4)}
+            if sep < 0.05:
+                # three identical 1-D curves: a 1-D LUT stores it exactly, in
+                # 1024 numbers instead of a 33³ lattice's 36k
+                write_cube_1d(cube_path, model, title=a.name)
+                diag["cube"]["kind"] = "1D (exact — the preset is separable)"
+            else:
+                write_cube(cube_path, bake_lut3d(model, a.cube_size), title=a.name)
+                diag["cube"]["kind"] = f"3D {a.cube_size}³ (the preset mixes channels)"
+        else:
+            from .align import sample_pixels
+            B, A, W = sample_pixels(pairs, min(a.max_samples, 600_000))
+            lut = fit_lut3d(B, A, W, model=model, size=a.cube_size)
+            write_cube(cube_path, lut, title=a.name)
+            diag["cube"] = {"source": "data", "kind": f"3D {a.cube_size}³"}
             from . import metrics as M
-            print("  3D LUT fit:", M.compare(apply_lut3d(pairs[0].before, lut),
-                                             pairs[0].after, pairs[0].weight), file=sys.stderr)
+            diag["cube"]["dE_on_first_pair"] = M.compare(
+                apply_lut3d(pairs[0].before, lut), pairs[0].after,
+                pairs[0].weight)["dE_mean"]
+        outputs.append(cube_path)
 
     _print_summary(model, diag, outputs)
     return 0
@@ -220,6 +236,10 @@ def _print_summary(model: PresetModel, diag: dict, outputs: list[str]) -> None:
         print("\nwarnings")
         for w in diag["warnings"]:
             print("  ! " + w)
+    cb = diag.get("cube")
+    if cb:
+        extra = (f"  ΔE {cb['dE_on_first_pair']}" if "dE_on_first_pair" in cb else "")
+        print(f"\n.cube: {cb['kind']}, built from the {cb['source']}{extra}")
     print("\nwrote:")
     for o in outputs:
         print("  " + o)
@@ -321,6 +341,11 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--calibration", help="JSON file overriding slider-response constants")
     e.add_argument("--cube", action="store_true", help="also fit and export a 3D LUT")
     e.add_argument("--cube-size", type=int, default=33)
+    e.add_argument("--cube-source", choices=["auto", "data", "model"], default="auto",
+                   help="what goes in the .cube. 'data' fits the lattice to the pixels, "
+                        "which captures colour the preset cannot express; 'model' bakes "
+                        "the extracted preset itself. 'auto' (default) uses 'model' for "
+                        "--color-mode tone and 'data' otherwise.")
     e.add_argument("--preview", action="store_true", help="save the re-rendered before image")
     e.add_argument("--no-report", action="store_true")
     e.add_argument("-v", "--verbose", action="store_true")
