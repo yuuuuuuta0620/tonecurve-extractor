@@ -607,10 +607,31 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 
 ---
 
+## 速度
+
+1 ペア・1600 px・3 反復で **約 17 秒**（M シリーズ Mac、ピークメモリ 2.5 GB）。
+
+律速は Python でも GIL でもありません。重い処理はすべて NumPy / OpenCV の C カーネルで、
+それらは GIL を解放します。実際 `user 30.5s / real 17.2s` と **1.8 コア分**使っています
+（作業空間 2 通りのフィットをスレッドで並列化）。
+
+過去にあった遅さは**アルゴリズムの誤り**でした。`weighted_median` が、ほとんどが
+ゼロ重みの 150 万要素配列を毎回まるごとソートしていて、プロファイルで
+**全体 120 秒中 94 秒が `argsort`** でした。呼び出し前にゼロ重みを落とすだけで
+argsort は 6.9 秒、チャート生成は 96.3 秒 → 2.0 秒になり、
+テストスイート全体も 581 秒 → 130 秒（4.5 倍）になりました。
+
+遅いと感じたら、まず疑うのは言語ではなく計算量です。
+
+- `--max-samples`（既定 150 万）を下げるとメモリと時間が比例して減ります
+- `--max-dim`（既定 1600）を下げると位置合わせと検証が速くなります
+- `--no-guide` `--no-chart` `--no-report` で後処理を省けます
+- `--working-space melissa` のように固定すると、2 通りのフィットが 1 通りになります
+
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 61 テスト、約 10 分
+.venv/bin/python -m pytest tests -q          # 64 テスト、約 2 分
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```

@@ -97,9 +97,13 @@ def build_chart(before: np.ndarray, after: np.ndarray, weight: np.ndarray,
                 w = weight * band_row * coloured * (slot == ci - 1)
             if w.sum() < MIN_TILE_WEIGHT:
                 continue
-            src = np.array([weighted_median(before[:, c], w) for c in range(3)])
-            dst = np.array([weighted_median(after[:, c], w) for c in range(3)])
-            mid = (np.array([weighted_median(tone[:, c], w) for c in range(3)])
+            # index into the cell's own pixels rather than handing the median a
+            # full-length vector that is zero almost everywhere
+            idx = np.flatnonzero(w)
+            wi = w[idx]
+            src = np.array([weighted_median(before[idx, c], wi) for c in range(3)])
+            dst = np.array([weighted_median(after[idx, c], wi) for c in range(3)])
+            mid = (np.array([weighted_median(tone[idx, c], wi) for c in range(3)])
                    if tone is not None else src)
             hb, sb, lb = cs.rgb_to_hsl(mid)
             ha, sa, la = cs.rgb_to_hsl(dst)

@@ -54,6 +54,61 @@ def test_delta_e2000_reference(lab1, lab2, expected):
 
 
 # --------------------------------------------------------------------- curves
+def test_weighted_median_ignores_zero_weights():
+    """Dropping zero-weight entries is what makes this fast; it must not
+    change the answer."""
+    from tcx.robust import weighted_median
+    rng = np.random.default_rng(0)
+    x = rng.random(5000)
+    w = rng.random(5000)
+    keep = rng.random(5000) < 0.1
+    w_sparse = np.where(keep, w, 0.0)
+    for q in (0.25, 0.5, 0.75):
+        assert (weighted_median(x, w_sparse, q)
+                == weighted_median(x[keep], w[keep], q))
+    assert np.isnan(weighted_median(x, np.zeros_like(x)))
+    assert np.isnan(weighted_median(np.array([]), np.array([])))
+
+
+def test_band_weights_vectorised_form_matches_the_loop():
+    """The fast path replaced an eight-pass loop; check it against a direct,
+    obviously-correct implementation."""
+    from tcx.model import BAND_CENTERS
+    h = np.linspace(0, 359.999, 20000)
+    got = band_weights(h)
+
+    k = len(BAND_CENTERS)
+    ext = np.concatenate([BAND_CENTERS, [BAND_CENTERS[0] + 360.0]])
+    want = np.zeros((len(h), k))
+    for n, v in enumerate(h):
+        for i in range(k):
+            lo, hi = ext[i], ext[i + 1]
+            if lo <= v < hi:
+                t = (v - lo) / (hi - lo)
+                b = t * t * (3 - 2 * t)
+                want[n, i] += 1 - b
+                want[n, (i + 1) % k] += b
+    assert np.abs(got - want).max() < 1e-12
+
+
+def test_extract_auto_is_deterministic_despite_threading():
+    """The candidate working spaces are fitted on threads and share the pair
+    objects, so a race would show up as a different answer."""
+    before = synthetic_photo(300, 450, seed=81)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    runs = []
+    for _ in range(2):
+        pair.fit_before = None
+        m, d = extract_auto([pair], ExtractOptions(iterations=2, colour_guide=False,
+                                                   colour_chart=False))
+        runs.append((m.working_space, d["verification_mean"]["dE_mean"],
+                     m.master.copy()))
+    assert runs[0][0] == runs[1][0]
+    assert runs[0][1] == runs[1][1]
+    assert np.array_equal(runs[0][2], runs[1][2])
+
+
 def test_isotonic_is_monotone():
     y = np.random.default_rng(1).random(200)
     z = C.isotonic(y)

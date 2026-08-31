@@ -5,9 +5,23 @@ import numpy as np
 
 
 def weighted_median(x: np.ndarray, w: np.ndarray, q: float = 0.5) -> float:
+    """Weighted quantile.
+
+    Callers routinely pass a full-length weight vector that is zero almost
+    everywhere -- one hue band, one chart cell -- so the zero-weight entries
+    are dropped before sorting.  Sorting them anyway made this the single
+    most expensive operation in the program.
+    """
     x = np.asarray(x, dtype=np.float64).ravel()
     w = np.asarray(w, dtype=np.float64).ravel()
-    if x.size == 0 or w.sum() <= 0:
+    if x.size == 0:
+        return float("nan")
+    nz = w > 0
+    if not nz.all():
+        if not nz.any():
+            return float("nan")
+        x, w = x[nz], w[nz]
+    elif w.sum() <= 0:
         return float("nan")
     o = np.argsort(x, kind="stable")
     x, w = x[o], w[o]

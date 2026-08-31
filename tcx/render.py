@@ -30,20 +30,19 @@ def band_weights(hue_deg: np.ndarray, falloff: str = "smooth") -> np.ndarray:
     h = np.asarray(hue_deg, dtype=np.float64) % 360.0
     centers = BAND_CENTERS
     k = len(centers)
-    w = np.zeros(h.shape + (k,), dtype=np.float64)
-
     ext = np.concatenate([centers, [centers[0] + 360.0]])
-    for i in range(k):
-        lo, hi = ext[i], ext[i + 1]
-        span = hi - lo
-        inside = (h >= lo) & (h < hi)
-        t = np.zeros_like(h)
-        np.divide(h - lo, span, out=t, where=inside)
-        t = np.where(inside, t, 0.0)
-        blend = _smoothstep(t) if falloff == "smooth" else t
-        j = (i + 1) % k
-        w[..., i] += np.where(inside, 1.0 - blend, 0.0)
-        w[..., j] += np.where(inside, blend, 0.0)
+
+    # locate each hue's segment once, instead of testing all eight in turn
+    i = np.clip(np.searchsorted(ext, h, side="right") - 1, 0, k - 1)
+    lo = ext[i]
+    t = (h - lo) / (ext[i + 1] - lo)
+    blend = _smoothstep(t) if falloff == "smooth" else np.clip(t, 0.0, 1.0)
+
+    w = np.zeros(h.shape + (k,), dtype=np.float64)
+    flat = w.reshape(-1, k)
+    idx = np.arange(flat.shape[0])
+    flat[idx, i.ravel()] = 1.0 - blend.ravel()
+    flat[idx, (i.ravel() + 1) % k] += blend.ravel()
     return w
 
 

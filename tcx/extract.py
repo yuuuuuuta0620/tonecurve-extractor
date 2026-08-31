@@ -172,6 +172,8 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     model = PresetModel(calibration=opts.calibration, name=opts.name, group=opts.group,
                         working_space=opts.working_space)
     W0 = W.copy()          # geometry-derived weights, never discarded
+    lab_A = cs.rgb_to_lab(A)   # the target never changes; converting it once
+                               # instead of per iteration is free speed
 
     # How much of the difference is plain brightness?  Always measured, and
     # moved into an Exposure slider only when asked.
@@ -248,7 +250,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
     # fit: afterwards the curve has already bent to accommodate it and the
     # residual no longer reveals it.
     if opts.detect_frozen:
-        observed = cs.delta_e2000(cs.rgb_to_lab(A), cs.rgb_to_lab(B))
+        observed = cs.delta_e2000(lab_A, cs.rgb_to_lab(B))
         med_obs = weighted_median(observed, W0)
         thr = max(opts.frozen_abs_de, opts.frozen_rel * med_obs)
         frozen = observed < thr
@@ -352,7 +354,7 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
                 "action") == "excluded from the fit") else None
 
         if opts.reject_sigma > 0:
-            resid = cs.delta_e2000(cs.rgb_to_lab(out), cs.rgb_to_lab(A))
+            resid = cs.delta_e2000(cs.rgb_to_lab(out), lab_A)
             med = weighted_median(resid, W0)
             sigma = 1.4826 * weighted_median(np.abs(resid - med), W0)
             cut = max(med + opts.reject_sigma * sigma, opts.reject_floor_de)
@@ -549,10 +551,30 @@ def extract_auto(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetMod
     if opts.working_space != "auto":
         return extract_levelled(pairs, opts, opts.working_space)
 
-    results = []
-    for space in cs.WORKING_SPACES:
-        model, diag = extract_levelled(pairs, opts, space)
-        results.append((diag["verification_mean"]["dE_mean"], space, model, diag))
+    # The candidate spaces are independent fits, and NumPy releases the GIL in
+    # its kernels, so running them on threads genuinely overlaps.  Each thread
+    # needs its own copy of the per-pair sampling inputs, which extract()
+    # otherwise mutates in place.
+    from concurrent.futures import ThreadPoolExecutor
+    import copy as _copy
+
+    def _fit(space):
+        local = [_copy.copy(p) for p in pairs]
+        for p in local:
+            p.fit_before = None
+        model, diag = extract_levelled(local, opts, space)
+        return diag["verification_mean"]["dE_mean"], space, model, diag, local
+
+    with ThreadPoolExecutor(max_workers=len(cs.WORKING_SPACES)) as ex:
+        raw = list(ex.map(_fit, cs.WORKING_SPACES))
+
+    results = [(de, space, model, diag) for de, space, model, diag, _ in raw]
+    # carry the winner's per-pair state back onto the caller's objects, which
+    # later stages (the report's outlier overlay, the patches) read from
+    best_local = min(raw, key=lambda r: r[0])[4]
+    for dst, src in zip(pairs, best_local):
+        dst.fit_before = src.fit_before
+        dst.outlier_mask = src.outlier_mask
 
     results.sort(key=lambda r: r[0])
     best_de, best_space, model, diag = results[0]
