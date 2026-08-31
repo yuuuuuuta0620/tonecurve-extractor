@@ -328,6 +328,39 @@ the look, in words
     · Green rotated -20°                                  [Green hue -20.4°]
 ```
 
+#### 色見本チャート（Lightroom で突き合わせる）
+
+HALD 画像のような一様な色立方体ではなく、**その写真に実際に含まれていて、かつ変化する色**だけを
+カラーミキサーと同じ並び（横＝色相バンド／縦＝明度）でタイルにします。
+
+同じ寸法で 4 枚出ます。
+
+| ファイル | 中身 |
+|---|---|
+| `*_chart_before.png` | 元の色。**これを Lightroom に読み込みます** |
+| `*_chart_tone.png` | トーンカーブだけ当てた状態（作業の起点）|
+| `*_chart_after.png` | 目標。ここに合わせ込みます |
+| `*_chart_compare.png` | 1 タイルに before / tone / after の 3 分割＋実測値（読む用）|
+
+**使い方**：`chart_before.png` を Lightroom に読み込む → 作業中のプリセットを当てる →
+`chart_after.png` と並べて見比べる。HSL やカラーグレーディングを動かしながら、
+**タイルが一致するまで追い込めます**。ラベルや文字は before/tone/after には入れていません
+（現像すると文字まで色が変わってしまうため）。
+
+`chart_compare.png` には各タイルに実測値が入ります。
+
+```
+each swatch: before | tone curve only | target — numbers are the colour work left after the curve
+
+  Orange / mid   H-10°  S+22%  L+5%    ΔE 6.4
+  Green  / mid   H-40°  S-8%   L-2%    ΔE 7.4
+  Aqua   / light H-15°  S-64%  L+3%    ΔE 6.5
+```
+
+淡い色や中性色では彩度の比率が発散する（ほぼ無彩色に対する +234% など）ので、
+その場合は**絶対量（pt）**に切り替えて表示します。データが無い明度の行は出力されません。
+`--no-chart` で省略できます。
+
 #### 特徴的な色の変化（ポイントカラーの狙い目）
 
 **色の変化が大きく、かつ色として読める領域**を画像から自動で探して、
@@ -554,6 +587,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 | `--diagnose` | off | 各ペア単独でもフィットして、限界か改善可能かを判定 |
 | `--no-guide` | off | 手動再現用のカラーガイドを省略 |
 | `--patches N` | 6 | 特徴的な色変化のクロップ枚数 |
+| `--no-chart` | off | 色見本チャートの出力を省略 |
 | `--reject-sigma S` | 6.0 | プリセットで説明できない画素の棄却しきい値。0 で無効 |
 | `--iterations N` | 3 | 座標降下の反復回数。4〜5 で概ね収束 |
 | `--smooth F` | 2.0 | トーンカーブの平滑化強度。ノイズの多い素材では上げる |
@@ -572,7 +606,7 @@ HSL とカラーグレーディングの解釈は本ツールが定義した近�
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 55 テスト、約 180 秒
+.venv/bin/python -m pytest tests -q          # 57 テスト、約 330 秒
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```
@@ -586,6 +620,7 @@ tcx/
   hsl.py         8 バンド HSL のロバスト連立フィット
   grading.py     カラーグレーディングの非線形フィット
   guide.py       手動再現用のカラーガイド、特徴的な色のクロップ、ルックの言語化
+  chart.py       Lightroom で突き合わせる色見本チャート
   extract.py     反復座標降下の統括
   lut3d.py       正則化付き 3D LUT 推定と .cube 出力
   xmp.py         Lightroom プリセット書き出し

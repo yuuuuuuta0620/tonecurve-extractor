@@ -80,6 +80,7 @@ def cmd_extract(a) -> int:
         normalize_pair_exposure=not a.no_normalize_pairs,
         normalize_pair_white_balance=not a.no_normalize_wb,
         colour_guide=not a.no_guide, n_patches=a.patches,
+        colour_chart=not a.no_chart,
         name=a.name, group=a.group, calibration=cal)
 
     model, diag = extract_auto(pairs, opts)
@@ -98,6 +99,9 @@ def cmd_extract(a) -> int:
         dumpable = dict(diag)
         if dumpable.get("patches"):
             dumpable["patches"] = patches_json(dumpable["patches"])
+        if dumpable.get("colour_chart"):
+            from .chart import chart_json
+            dumpable["colour_chart"] = chart_json(dumpable["colour_chart"])
         json.dump(dumpable, f, indent=1, ensure_ascii=False, default=float)
 
     outputs = [xmp_path]
@@ -109,6 +113,10 @@ def cmd_extract(a) -> int:
         html_path = os.path.join(a.outdir, stem + ".html")
         write_html(html_path, model, diag, png, xmp)
         outputs += [png_path, html_path]
+
+    if diag.get("colour_chart") and not a.no_report:
+        from .chart import write_charts
+        outputs += write_charts(os.path.join(a.outdir, stem), diag["colour_chart"])
 
     if a.preview:
         save_image(os.path.join(a.outdir, stem + "_rendered.jpg"),
@@ -318,6 +326,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="level exposure between pairs but leave their white balance alone")
     e.add_argument("--patches", type=int, default=6, metavar="N",
                    help="how many characteristic colour-change crops to show")
+    e.add_argument("--no-chart", action="store_true",
+                   help="skip the before/after colour reference charts")
     e.add_argument("--no-guide", action="store_true",
                    help="skip the written colour guide")
     e.add_argument("--diagnose", action="store_true",

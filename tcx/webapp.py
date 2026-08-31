@@ -15,7 +15,7 @@ from .align import align_pair, sample_pixels
 from .extract import ExtractOptions, explain_residual, extract_auto
 from .imageio_utils import load_image, match_names, split_pair
 from .model import Calibration
-from .report import guide_html, look_html, make_figure, patches_html
+from .report import chart_html, guide_html, look_html, make_figure, patches_html
 from .xmp import build_xmp
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>tonecurve-extractor</title>
@@ -232,6 +232,7 @@ def create_app(workdir: str | None = None) -> Flask:
                         "suspect": suspect_any,
                         "explain": diag.get("residual_explained"),
                         "guide_html": (look_html(diag.get("look_description"))
+                                       + chart_html(diag.get("colour_chart"))
                                        + patches_html(diag.get("patches") or [])
                                        + guide_html(diag.get("colour_guide"))),
                         "warnings": diag.get("warnings", [])})

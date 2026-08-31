@@ -166,7 +166,9 @@ def _img_tag(arr, height=132) -> str:
     a = (np.clip(arr, 0, 1) * 255 + 0.5).astype(np.uint8)
     buf = _io.BytesIO()
     Image.fromarray(a).save(buf, "PNG")
-    return (f'<img style="height:{height}px;width:auto;border-radius:4px;margin:0" '
+    style = ("max-width:100%;border-radius:4px;margin:0" if height == 0 else
+             f"height:{height}px;width:auto;border-radius:4px;margin:0")
+    return (f'<img style="{style}" '
             f'src="data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}">')
 
 
@@ -194,6 +196,24 @@ def patches_html(patches: list[dict]) -> str:
 <p class="sub">左の色を Lightroom のポイントカラーで拾い、右の色になるまで動かしてください。
 トーンカーブ適用後の状態を基準にしているので、先にカーブを当ててから作業します。</p>
 {''.join(cards)}
+"""
+
+
+def chart_html(chart: dict) -> str:
+    if not chart:
+        return ""
+    from .chart import render_chart
+    imgs = {k: _img_tag(np.asarray(render_chart(chart, k, labels=(k == "compare")))
+                        .astype(np.float64) / 255.0, height=0)
+            for k in ("compare",)}
+    return f"""
+<h2>色見本チャート（Lightroom で突き合わせる用）</h2>
+<p class="sub">写真に実際に含まれていて、かつ変化する色だけを、カラーミキサーと同じ並び
+（横＝色相バンド／縦＝明度）でタイルにしたものです。
+<b>before チャートを Lightroom に読み込んで作業中のプリセットを当て、after チャートと
+見比べる</b>と、目で追い込めます。PNG は <code>*_chart_before.png</code> /
+<code>*_chart_tone.png</code> / <code>*_chart_after.png</code> に出力されます。</p>
+<div style="overflow-x:auto">{imgs['compare']}</div>
 """
 
 
@@ -272,6 +292,9 @@ def _dumpable(diag: dict) -> dict:
     out = dict(diag)
     if out.get("patches"):
         out["patches"] = patches_json(out["patches"])
+    if out.get("colour_chart"):
+        from .chart import chart_json
+        out["colour_chart"] = chart_json(out["colour_chart"])
     return out
 
 
@@ -298,6 +321,7 @@ def write_html(path: str, model: PresetModel, diag: dict, png: bytes, xmp: str) 
 {diag.get('n_samples', 0):,} samples · {diag.get('elapsed_sec')}s</p>
 <img src="data:image/png;base64,{b64}">
 {look_html(diag.get("look_description"))}
+{chart_html(diag.get("colour_chart"))}
 {patches_html(diag.get("patches") or [])}
 {guide_html(diag.get("colour_guide"))}
 <h2>Lightroom preset (.xmp)</h2>

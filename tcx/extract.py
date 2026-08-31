@@ -65,6 +65,7 @@ class ExtractOptions:
     #: measure the colour work in human terms, for reproducing by hand
     colour_guide: bool = True
     n_patches: int = 6                # crops of characteristic colour changes
+    colour_chart: bool = True         # before/after swatch chart to match by eye
     name: str = "Extracted Preset"
     group: str = "tcx"
     calibration: Calibration = field(default_factory=Calibration)
@@ -451,6 +452,10 @@ def extract(pairs: list[PairData], opts: ExtractOptions) -> tuple[PresetModel, d
             f"these sliders hit the ±100 limit and were clipped: {', '.join(railed)}. "
             f"A slider on the rail usually means the model is being asked to explain "
             f"something it cannot express, not that the preset really is that extreme."]
+
+    if opts.colour_chart:
+        from .chart import build_chart
+        diag["colour_chart"] = build_chart(B, A, W0, model)
 
     if opts.colour_guide:
         from .guide import build_guide, characteristic_patches, describe_look

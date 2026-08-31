@@ -578,6 +578,54 @@ def test_1d_cube_is_exact_when_separable(tmp_path):
     assert err < 0.01, err
 
 
+def test_colour_chart_covers_only_colours_the_photographs_contain(tmp_path):
+    from tcx.chart import build_chart, chart_json, render_chart, write_charts
+    before = synthetic_photo(400, 600, seed=71)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, diag = extract([pair], ExtractOptions(iterations=2, colour_guide=False,
+                                                 working_space=look.working_space))
+    chart = diag["colour_chart"]
+    assert chart["cells"], "no swatches found"
+    assert chart["columns"][0] == "neutral" and len(chart["columns"]) == 9
+    # rows with no data are dropped, so every row must carry at least one cell
+    for ri in range(len(chart["rows"])):
+        assert any(r == ri for r, _ in chart["cells"])
+
+    for c in chart["cells"].values():
+        assert c["before"].shape == (3,) and c["after"].shape == (3,)
+        assert np.all((c["before"] >= 0) & (c["before"] <= 1))
+        assert "tone" in c
+
+    json.dumps(chart_json(chart))
+
+    # the three plain charts must share geometry, or they cannot be compared
+    sizes = {k: render_chart(chart, k, labels=False).size
+             for k in ("before", "tone", "after")}
+    assert len(set(sizes.values())) == 1, sizes
+    paths = write_charts(str(tmp_path / "x"), chart)
+    assert len(paths) == 4 and all(os.path.exists(p) for p in paths)
+
+
+def test_chart_swatches_match_what_the_preset_does():
+    """The 'after' swatch has to be the target, and the 'tone' swatch has to be
+    what the curve alone produces -- otherwise matching by eye is meaningless."""
+    from tcx.chart import build_chart
+    from tcx.guide import _tone_only
+    before = synthetic_photo(300, 450, seed=73)
+    look = known_preset()
+    after = render(before, look)
+    pair = align_pair(before, after, do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=3, colour_guide=False,
+                                              working_space=look.working_space))
+    B, A, W = sample_pixels([pair], 300_000)
+    chart = build_chart(B, A, W, model)
+    for c in chart["cells"].values():
+        got = _tone_only(np.asarray(c["before"])[None, :], model)[0]
+        assert float(cs.delta_e2000(cs.rgb_to_lab(got),
+                                    cs.rgb_to_lab(c["tone"]))) < 6.0
+
+
 def test_cube_file_is_parseable(tmp_path, synthetic):
     lut = np.clip(np.random.default_rng(0).random((9, 9, 9, 3)), 0, 1)
     p = tmp_path / "x.cube"
