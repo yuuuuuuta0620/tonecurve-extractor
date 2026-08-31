@@ -365,6 +365,50 @@ each swatch: before | tone curve only | target — numbers are the colour work l
 その場合は**絶対量（pt）**に切り替えて表示します。データが無い明度の行は出力されません。
 `--no-chart` で省略できます。
 
+#### Lightroom の実挙動で答え合わせする（`tcx verify`）
+
+チャートに**プリセットを当てた結果が `chart_tone.png` と完全一致しない**のは正常です。
+誤差の内訳を実測すると：
+
+| 要因 | チャート上の ΔE 平均 | 最大 |
+|---|---|---|
+| **作業空間**（melissa vs srgb）| **0.81** | **5.40** |
+| 制御点 16 点＋スプライン形状 | 0.000 | 0.000 |
+| PNG の 8bit 量子化 | 0.21 | 0.69 |
+
+支配的なのは作業空間です。しかも**チャートは最悪ケース**で、彩度の高いタイルばかりなので
+写真より差が出ます（写真の平均彩度 0.18 に対しチャートは 0.23、最大値の差が大きい）。
+
+そして**これはあなたの Lightroom で決着をつけられます。**
+チャートにプリセットを当てて書き出し、それを渡すだけです。
+
+```bash
+.venv/bin/python -m tcx verify \
+  --chart  out/preset_chart_before.png \
+  --export lightroom_から書き出したもの.png \
+  --preset out/preset.json
+```
+
+```
+what Lightroom actually did with this preset
+compared over 1,904,258 swatch pixels
+
+  melissa   ΔE mean  0.868   p95  4.698   max  5.353
+  srgb      ΔE mean  0.248   p95   0.49   max   0.77  <-- matches
+
+  Lightroom applies the curve in 'srgb', but this preset was fitted for 'melissa'.
+  Re-run the extraction with --working-space srgb to remove that error.
+
+  residual after the better hypothesis: ΔE 0.248
+```
+
+タイルの内側だけを画像から自動検出して比較するので、書き出し時にリサイズされていても動きます。
+正解が既知の疑似 Lightroom 出力（8bit＋リサイズ込み）で両方向とも正しく判定でき、
+残差 0.22〜0.25 は 8bit 量子化の理論値 0.21 とほぼ一致しました。
+
+**一度これをやれば、以降すべての抽出で作業空間の迷いが消えます。**
+判別マージンが 0.15 未満なら「このチャートでは区別できない」と表示します。
+
 #### 特徴的な色の変化（ポイントカラーの狙い目）
 
 **色の変化が大きく、かつ色として読める領域**を画像から自動で探して、
@@ -631,7 +675,7 @@ argsort は 6.9 秒、チャート生成は 96.3 秒 → 2.0 秒になり、
 ## 開発
 
 ```bash
-.venv/bin/python -m pytest tests -q          # 64 テスト、約 2 分
+.venv/bin/python -m pytest tests -q          # 67 テスト、約 2 分
 .venv/bin/python examples/make_synthetic.py  # 既知プリセットで before/after を生成
 .venv/bin/python tests/eval_synthetic.py     # 圧縮条件別の精度ベンチマーク
 ```
@@ -646,6 +690,7 @@ tcx/
   grading.py     カラーグレーディングの非線形フィット
   guide.py       手動再現用のカラーガイド、特徴的な色のクロップ、ルックの言語化
   chart.py       Lightroom で突き合わせる色見本チャート
+  verify.py      Lightroom の実出力と照合して作業空間を確定する
   extract.py     反復座標降下の統括
   lut3d.py       正則化付き 3D LUT 推定と .cube 出力
   xmp.py         Lightroom プリセット書き出し

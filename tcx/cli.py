@@ -262,6 +262,18 @@ def cmd_apply(a) -> int:
     return 0
 
 
+def cmd_verify(a) -> int:
+    from .verify import compare_export, format_report
+    model = PresetModel.from_json(a.preset)
+    r = compare_export(load_image(a.chart), load_image(a.export), model)
+    print(format_report(r))
+    if a.json:
+        with open(a.json, "w", encoding="utf-8") as f:
+            json.dump(r, f, indent=1)
+        print(f"\nwrote {a.json}")
+    return 0
+
+
 def cmd_fetch(a) -> int:
     print("Note: only download images you are permitted to use, and respect the "
           "source site's terms of service.", file=sys.stderr)
@@ -369,6 +381,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap = sub.add_parser("apply", help="apply an extracted preset (.json) to an image")
     ap.add_argument("preset"); ap.add_argument("image"); ap.add_argument("-o", "--out", required=True)
     ap.set_defaults(func=cmd_apply)
+
+    v = sub.add_parser("verify", help="check a preset against a Lightroom export of "
+                                      "the colour chart")
+    v.add_argument("--chart", required=True, help="the *_chart_before.png you imported")
+    v.add_argument("--export", required=True,
+                   help="that chart exported back out of Lightroom with the preset on")
+    v.add_argument("--preset", required=True, help="the preset .json from extract")
+    v.add_argument("--json", help="also write the result here")
+    v.set_defaults(func=cmd_verify)
 
     f = sub.add_parser("fetch", help="download sample images you are permitted to use")
     f.add_argument("url", nargs="+"); f.add_argument("-o", "--outdir", default="samples")

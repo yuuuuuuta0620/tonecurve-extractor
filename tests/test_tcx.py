@@ -729,6 +729,53 @@ def test_chart_swatches_match_what_the_preset_does():
                                     cs.rgb_to_lab(c["tone"]))) < 6.0
 
 
+@pytest.mark.parametrize("lightroom_space", ["melissa", "srgb"])
+def test_verify_identifies_the_space_lightroom_used(tmp_path, lightroom_space):
+    """The one ambiguity the sample images cannot settle can be settled by
+    round-tripping the chart through Lightroom and handing it back."""
+    import cv2
+    from tcx.chart import build_chart, render_chart
+    from tcx.verify import compare_export
+
+    before = synthetic_photo(300, 450, seed=83)
+    look = known_preset()
+    pair = align_pair(before, render(before, look), do_align=False, blur_sigma=0.0)
+    model, _ = extract([pair], ExtractOptions(iterations=2, color_mode="tone",
+                                              colour_guide=False, colour_chart=False,
+                                              working_space="melissa"))
+    B, A, W = sample_pixels([pair], 300_000)
+    chart = build_chart(B, A, W, model)
+    img = np.asarray(render_chart(chart, "before", tile=120,
+                                  labels=False)).astype(np.float64) / 255.0
+    chart_path = tmp_path / "chart_before.png"
+    save_image(str(chart_path), img)
+    chart_in = load_image(str(chart_path))
+
+    # stand in for Lightroom: render in the given space, 8-bit PNG, resized
+    sim = PresetModel.from_dict(model.to_dict())
+    sim.working_space = lightroom_space
+    export_path = tmp_path / "lr.png"
+    save_image(str(export_path), render(chart_in, sim))
+    ex = load_image(str(export_path))
+    ex = cv2.resize(ex, (int(ex.shape[1] * 0.87), int(ex.shape[0] * 0.87)),
+                    interpolation=cv2.INTER_AREA)
+
+    r = compare_export(chart_in, ex, model)
+    assert r["lightroom_uses"] == lightroom_space, r
+    assert r["margin"] > 0.2, r
+    # what remains should be about 8-bit quantisation, not a modelling error
+    assert r["residual_dE"] < 0.5, r
+    assert r["agrees"] is (lightroom_space == "melissa")
+
+
+def test_verify_rejects_an_image_that_is_not_a_chart(tmp_path):
+    from tcx.verify import compare_export
+    noise = np.random.default_rng(0).random((120, 160, 3))
+    model = PresetModel()
+    with pytest.raises(ValueError, match="flat swatch"):
+        compare_export(noise, noise, model)
+
+
 def test_cube_file_is_parseable(tmp_path, synthetic):
     lut = np.clip(np.random.default_rng(0).random((9, 9, 9, 3)), 0, 1)
     p = tmp_path / "x.cube"
